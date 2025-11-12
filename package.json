@@ -1,0 +1,23 @@
+{
+  "name": "kosuke-cli",
+  "version": "0.0.1",
+  "description": "",
+  "keywords": [
+    "CLI"
+  ],
+  "homepage": "https://github.com/Kosuke-Org/kosuke-cli#readme",
+  "bugs": {
+    "url": "https://github.com/Kosuke-Org/kosuke-cli/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kosuke-Org/kosuke-cli.git"
+  },
+  "license": "ISC",
+  "author": "filippo.pedrazzini@kosuke.ai",
+  "type": "commonjs",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
