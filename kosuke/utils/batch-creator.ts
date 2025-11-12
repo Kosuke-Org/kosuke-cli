@@ -3,7 +3,7 @@
  */
 
 import { dirname } from 'path';
-import type { Batch } from '../types';
+import type { Batch } from '../types.js';
 
 interface BatchCreatorOptions {
   maxSize?: number;

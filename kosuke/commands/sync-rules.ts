@@ -6,10 +6,10 @@ import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
-import { getCurrentRepo, isKosukeTemplateRepo } from '../utils/git';
-import { createPullRequest } from '../utils/github';
-import { runFormat, runLint } from '../utils/validator';
-import type { RulesAdaptation } from '../types';
+import { getCurrentRepo, isKosukeTemplateRepo } from '../utils/git.js';
+import { createPullRequest } from '../utils/github.js';
+import { runFormat, runLint } from '../utils/validator.js';
+import type { RulesAdaptation } from '../types.js';
 
 // Constants
 const KOSUKE_TEMPLATE_REPO = 'https://github.com/Kosuke-Org/kosuke-template.git';

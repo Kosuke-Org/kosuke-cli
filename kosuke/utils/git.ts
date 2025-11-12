@@ -3,7 +3,7 @@
  */
 
 import simpleGit, { type SimpleGit } from 'simple-git';
-import type { GitInfo } from '../types';
+import type { GitInfo } from '../types.js';
 
 const git: SimpleGit = simpleGit();
 

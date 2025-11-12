@@ -12,12 +12,12 @@ import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import simpleGit from 'simple-git';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { discoverFiles } from '../utils/file-discovery';
-import { createBatches } from '../utils/batch-creator';
-import { runLint, runTypecheck } from '../utils/validator';
-import { createBranch, commit, push, reset, getCurrentRepo } from '../utils/git';
-import { createPullRequest } from '../utils/github';
-import type { AnalyseOptions, Batch, Fix } from '../types';
+import { discoverFiles } from '../utils/file-discovery.js';
+import { createBatches } from '../utils/batch-creator.js';
+import { runLint, runTypecheck } from '../utils/validator.js';
+import { createBranch, commit, push, reset, getCurrentRepo } from '../utils/git.js';
+import { createPullRequest } from '../utils/github.js';
+import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
 interface BatchResult {
   fixes: Fix[];

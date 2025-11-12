@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env node
 
 /**
  * Kosuke CLI - Development Automation Tool
@@ -17,8 +17,8 @@
  */
 
 import 'dotenv/config';
-import { syncRulesCommand } from './kosuke/commands/sync-rules';
-import { analyseCommand } from './kosuke/commands/analyse';
+import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
+import { analyseCommand } from './kosuke/commands/analyse.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -76,8 +76,8 @@ COMMANDS:
       --force    Compare files regardless of recent commit history
     
     Examples:
-      bun run kosuke sync-rules
-      bun run kosuke sync-rules --force
+      kosuke sync-rules
+      kosuke sync-rules --force
 
   analyse
     Analyze and fix code quality issues against CLAUDE.md rules
@@ -89,10 +89,10 @@ COMMANDS:
       --types=<exts>  Analyze specific file types (comma-separated)
     
     Examples:
-      bun run kosuke analyse
-      bun run kosuke analyse --scope=hooks,lib/trpc
-      bun run kosuke analyse --types=ts,tsx
-      bun run kosuke analyse --dry-run
+      kosuke analyse
+      kosuke analyse --scope=hooks,lib/trpc
+      kosuke analyse --types=ts,tsx
+      kosuke analyse --dry-run
 
 ENVIRONMENT VARIABLES:
 
