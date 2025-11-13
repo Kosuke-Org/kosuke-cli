@@ -23,21 +23,35 @@ interface BatchResult {
   fixes: Fix[];
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
   cost: number;
 }
 
 /**
  * Calculate cost based on Claude Sonnet 4.5 pricing
- * $3 per million input tokens, $15 per million output tokens
+ * - $3 per million input tokens
+ * - $15 per million output tokens
+ * - $3.75 per million cache creation tokens (input + 25% overhead)
+ * - $0.30 per million cache read tokens (90% discount from input)
  */
-function calculateCost(inputTokens: number, outputTokens: number): number {
+function calculateCost(
+  inputTokens: number,
+  outputTokens: number,
+  cacheCreationTokens: number = 0,
+  cacheReadTokens: number = 0
+): number {
   const INPUT_COST_PER_MILLION = 3.0;
   const OUTPUT_COST_PER_MILLION = 15.0;
+  const CACHE_CREATION_COST_PER_MILLION = 3.75; // Input cost + 25% overhead
+  const CACHE_READ_COST_PER_MILLION = 0.30; // 90% discount from input cost
 
   const inputCost = (inputTokens / 1_000_000) * INPUT_COST_PER_MILLION;
   const outputCost = (outputTokens / 1_000_000) * OUTPUT_COST_PER_MILLION;
+  const cacheCreationCost = (cacheCreationTokens / 1_000_000) * CACHE_CREATION_COST_PER_MILLION;
+  const cacheReadCost = (cacheReadTokens / 1_000_000) * CACHE_READ_COST_PER_MILLION;
 
-  return inputCost + outputCost;
+  return inputCost + outputCost + cacheCreationCost + cacheReadCost;
 }
 
 /**
@@ -90,6 +104,8 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
     let fixCount = 0;
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
 
     // Display Claude's reasoning and actions
     for await (const message of responseStream) {
@@ -119,13 +135,19 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
 
       // Track token usage from the response
       if (message.type === 'result' && message.subtype === 'success') {
+        // Log the complete usage object to see all available fields
+        console.log('📊 Usage data:', JSON.stringify(message.usage, null, 2));
+        
+        // Capture all token types including cache-related tokens
         inputTokens += message.usage.input_tokens || 0;
         outputTokens += message.usage.output_tokens || 0;
+        cacheCreationTokens += message.usage.cache_creation_input_tokens || 0;
+        cacheReadTokens += message.usage.cache_read_input_tokens || 0;
       }
     }
 
     // Calculate cost for this batch
-    const cost = calculateCost(inputTokens, outputTokens);
+    const cost = calculateCost(inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
 
     // Return placeholder fixes (real fix tracking would require parsing Claude's edits)
     const fixes: Fix[] = batch.files.map((file) => ({
@@ -136,14 +158,22 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
     }));
 
     console.log(`\n   ✨ Batch analysis complete (${fixCount} fixes applied)`);
-    console.log(
-      `   💰 Cost: $${cost.toFixed(4)} (${inputTokens.toLocaleString()} input + ${outputTokens.toLocaleString()} output tokens)`
-    );
+    
+    // Build detailed cost breakdown
+    const tokenBreakdown = [];
+    if (inputTokens > 0) tokenBreakdown.push(`${inputTokens.toLocaleString()} input`);
+    if (outputTokens > 0) tokenBreakdown.push(`${outputTokens.toLocaleString()} output`);
+    if (cacheCreationTokens > 0) tokenBreakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
+    if (cacheReadTokens > 0) tokenBreakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
+    
+    console.log(`   💰 Cost: $${cost.toFixed(4)} (${tokenBreakdown.join(' + ')} tokens)`);
 
     return {
       fixes: fixCount > 0 ? fixes : [],
       inputTokens,
       outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
       cost,
     };
   } catch (error) {
@@ -183,7 +213,9 @@ async function createQualityPR(
   totalFixes: number,
   totalCost: number,
   totalInputTokens: number,
-  totalOutputTokens: number
+  totalOutputTokens: number,
+  totalCacheCreationTokens: number,
+  totalCacheReadTokens: number
 ): Promise<void> {
   const { owner, repo } = await getCurrentRepo();
 
@@ -206,10 +238,14 @@ This PR contains automated fixes to align the codebase with **CLAUDE.md** standa
 - **Batches Processed**: ${batches.length}
 - **Files Modified**: ${batches.reduce((sum, b) => sum + b.files.length, 0)}
 - **Fixes Applied**: ${totalFixes}
-- **💰 Estimated Cost**: $${totalCost.toFixed(4)}
-  - Input tokens: ${totalInputTokens.toLocaleString()}
-  - Output tokens: ${totalOutputTokens.toLocaleString()}
-  - Model: Claude Sonnet 4.5 ($3/M input, $15/M output)
+- **💰 Total Cost**: $${totalCost.toFixed(4)}
+
+### 🔢 Token Usage
+- **Input tokens**: ${totalInputTokens.toLocaleString()} ($3/M)
+- **Output tokens**: ${totalOutputTokens.toLocaleString()} ($15/M)
+- **Cache write tokens**: ${totalCacheCreationTokens.toLocaleString()} ($3.75/M)
+- **Cache read tokens**: ${totalCacheReadTokens.toLocaleString()} ($0.30/M)
+- **Model**: Claude Sonnet 4.5
 
 ### 📦 Batches
 
@@ -313,6 +349,8 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
     let totalCost = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let totalCacheCreationTokens = 0;
+    let totalCacheReadTokens = 0;
 
     for (const [index, batch] of batches.entries()) {
       console.log(`\n📊 Progress: ${index + 1}/${batches.length}`);
@@ -334,6 +372,8 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
           totalCost += result.cost;
           totalInputTokens += result.inputTokens;
           totalOutputTokens += result.outputTokens;
+          totalCacheCreationTokens += result.cacheCreationTokens;
+          totalCacheReadTokens += result.cacheReadTokens;
         } else {
           // Validation failed, rollback
           console.warn(`   ⚠️  Validation failed, rolling back batch\n`);
@@ -361,7 +401,9 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
       totalFixes,
       totalCost,
       totalInputTokens,
-      totalOutputTokens
+      totalOutputTokens,
+      totalCacheCreationTokens,
+      totalCacheReadTokens
     );
 
     console.log('\n✅ Quality analysis complete!');
