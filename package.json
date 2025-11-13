@@ -43,7 +43,9 @@
     "format": "prettier --write \"**/*.{ts,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
     "typecheck": "tsc --noEmit",
-    "lint-staged": "lint-staged"
+    "knip": "knip",
+    "lint-staged": "lint-staged",
+    "check:all": "npm run lint && npm run typecheck && npm test && npm run knip"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
@@ -61,6 +63,7 @@
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^9.1.0",
     "husky": "^9.1.7",
+    "knip": "^5.45.3",
     "lint-staged": "^15.2.11",
     "prettier": "^3.4.2",
     "tsx": "^4.7.0",
