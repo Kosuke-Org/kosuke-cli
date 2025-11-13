@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Check if we have TypeScript/JavaScript files in the commit
+js_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(js|jsx|ts|tsx)$' || true)
+
+# Run Node.js checks if there are JS/TS files
+if [ -n "$js_files" ]; then
+  echo "🌐 Running code quality checks..."
+
+  # Run linting and formatting
+  echo "  → Running lint-staged checks..."
+  npm run lint-staged
+  if [ $? -ne 0 ]; then
+    echo "❌ Lint-staged checks failed. Please fix the errors before committing."
+    exit 1
+  fi
+
+  # Run type checking
+  echo "  → Running TypeScript type checking..."
+  npm run typecheck
+  if [ $? -ne 0 ]; then
+    echo "❌ Type checking failed. Please fix the type errors before committing."
+    exit 1
+  fi
+
+  # Run tests
+  echo "  → Running tests..."
+  npm test
+  if [ $? -ne 0 ]; then
+    echo "❌ Tests failed. Please fix the failing tests before committing."
+    exit 1
+  fi
+
+  echo "✅ Code quality checks passed!"
+fi
+
+echo "✅ All pre-commit checks passed!"

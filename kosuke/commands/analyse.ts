@@ -15,7 +15,14 @@ import { join } from 'path';
 import { discoverFiles } from '../utils/file-discovery.js';
 import { createBatches } from '../utils/batch-creator.js';
 import { runLint, runTypecheck } from '../utils/validator.js';
-import { createBranch, commit, push, reset, getCurrentRepo, getCurrentBranch } from '../utils/git.js';
+import {
+  createBranch,
+  commit,
+  push,
+  reset,
+  getCurrentRepo,
+  getCurrentBranch,
+} from '../utils/git.js';
 import { createPullRequest } from '../utils/github.js';
 import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
@@ -44,7 +51,7 @@ function calculateCost(
   const INPUT_COST_PER_MILLION = 3.0;
   const OUTPUT_COST_PER_MILLION = 15.0;
   const CACHE_CREATION_COST_PER_MILLION = 3.75; // Input cost + 25% overhead
-  const CACHE_READ_COST_PER_MILLION = 0.30; // 90% discount from input cost
+  const CACHE_READ_COST_PER_MILLION = 0.3; // 90% discount from input cost
 
   const inputCost = (inputTokens / 1_000_000) * INPUT_COST_PER_MILLION;
   const outputCost = (outputTokens / 1_000_000) * OUTPUT_COST_PER_MILLION;
@@ -137,7 +144,7 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
       if (message.type === 'result' && message.subtype === 'success') {
         // Log the complete usage object to see all available fields
         console.log('📊 Usage data:', JSON.stringify(message.usage, null, 2));
-        
+
         // Capture all token types including cache-related tokens
         inputTokens += message.usage.input_tokens || 0;
         outputTokens += message.usage.output_tokens || 0;
@@ -158,14 +165,15 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
     }));
 
     console.log(`\n   ✨ Batch analysis complete (${fixCount} fixes applied)`);
-    
+
     // Build detailed cost breakdown
     const tokenBreakdown = [];
     if (inputTokens > 0) tokenBreakdown.push(`${inputTokens.toLocaleString()} input`);
     if (outputTokens > 0) tokenBreakdown.push(`${outputTokens.toLocaleString()} output`);
-    if (cacheCreationTokens > 0) tokenBreakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
+    if (cacheCreationTokens > 0)
+      tokenBreakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
     if (cacheReadTokens > 0) tokenBreakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
-    
+
     console.log(`   💰 Cost: $${cost.toFixed(4)} (${tokenBreakdown.join(' + ')} tokens)`);
 
     return {
@@ -403,7 +411,9 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
 
     console.log(`\n📊 Summary of processed batches:`);
     console.log(`   ✅ Successfully processed: ${processedBatches.length}`);
-    console.log(`   ⚠️  Skipped (no changes or validation failed): ${batches.length - processedBatches.length}`);
+    console.log(
+      `   ⚠️  Skipped (no changes or validation failed): ${batches.length - processedBatches.length}`
+    );
 
     // Push all commits
     console.log(`\n${'='.repeat(60)}`);
@@ -413,7 +423,9 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
       console.log('✅ Commits pushed successfully\n');
     } catch (error) {
       console.error('❌ Failed to push commits:', error);
-      throw new Error(`Failed to push branch ${branchName}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to push branch ${branchName}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     // Create PR
@@ -433,7 +445,9 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
       console.error('❌ Failed to create pull request:', error);
       console.log(`\nℹ️  Changes have been pushed to branch: ${branchName}`);
       console.log(`   You can manually create a PR from this branch.`);
-      throw new Error(`Failed to create PR: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to create PR: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     console.log('\n✅ Quality analysis complete!');

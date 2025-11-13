@@ -5,8 +5,6 @@
  */
 
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { runLint } from '../utils/validator.js';
 import { commit, push, createBranch, getCurrentRepo } from '../utils/git.js';
 import { createPullRequest } from '../utils/github.js';
@@ -162,7 +160,9 @@ export async function lintCommand(options: LintOptions = {}): Promise<void> {
         console.log('✅ All linting errors fixed!\n');
         break;
       } else {
-        console.log(`\n⚠️  Some errors remain (${lintResult.error?.split('\n').length || 0} lines):`);
+        console.log(
+          `\n⚠️  Some errors remain (${lintResult.error?.split('\n').length || 0} lines):`
+        );
         console.log(lintResult.error);
       }
     }
@@ -189,7 +189,7 @@ export async function lintCommand(options: LintOptions = {}): Promise<void> {
         // Create PR
         console.log('📋 Creating pull request...\n');
         const { owner, repo } = await getCurrentRepo();
-        
+
         const prBody = `## 🔧 Automated Lint Fixes
 
 This PR contains automated fixes for linting errors.
@@ -231,4 +231,3 @@ This PR contains automated fixes for linting errors.
     throw error;
   }
 }
-

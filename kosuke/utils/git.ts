@@ -28,16 +28,15 @@ async function ensureGitIdentity(): Promise<void> {
     }
 
     // Configure git identity using environment variables or defaults
-    const name = process.env.GIT_AUTHOR_NAME || 
-                 process.env.GIT_COMMITTER_NAME || 
-                 'kosuke-bot';
-    const email = process.env.GIT_AUTHOR_EMAIL || 
-                  process.env.GIT_COMMITTER_EMAIL || 
-                  'kosuke-bot@users.noreply.github.com';
+    const name = process.env.GIT_AUTHOR_NAME || process.env.GIT_COMMITTER_NAME || 'kosuke-bot';
+    const email =
+      process.env.GIT_AUTHOR_EMAIL ||
+      process.env.GIT_COMMITTER_EMAIL ||
+      'kosuke-bot@users.noreply.github.com';
 
     await git.addConfig('user.name', name, false, 'local');
     await git.addConfig('user.email', email, false, 'local');
-    
+
     console.log(`✅ Configured git identity: ${name} <${email}>`);
     gitIdentityConfigured = true;
   } catch (error) {

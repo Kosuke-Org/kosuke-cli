@@ -42,9 +42,11 @@ GITHUB_TOKEN=your-github-token-here
 Sync rules and documentation from kosuke-template repository.
 
 **Options:**
+
 - `--force` - Compare files regardless of recent commit history
 
 **Examples:**
+
 ```bash
 kosuke sync-rules
 kosuke sync-rules --force
@@ -55,11 +57,13 @@ kosuke sync-rules --force
 Analyze and fix code quality issues against CLAUDE.md rules. Creates a single PR with all fixes from multiple isolated Claude runs.
 
 **Options:**
+
 - `--dry-run` - Report violations only, don't create PR
 - `--scope=<dirs>` - Analyze specific directories (comma-separated)
 - `--types=<exts>` - Analyze specific file types (comma-separated)
 
 **Examples:**
+
 ```bash
 # Analyze entire project
 kosuke analyse
@@ -79,10 +83,12 @@ kosuke analyse --dry-run
 Use Claude AI to automatically fix linting errors in your codebase. Runs the lint command from package.json, analyzes the errors, and applies fixes.
 
 **Options:**
+
 - `--dry-run` - Report errors only, don't fix them
 - `--no-pr` - Fix locally without creating PR
 
 **Examples:**
+
 ```bash
 # Fix all linting errors and create PR
 kosuke lint
@@ -95,6 +101,7 @@ kosuke lint --no-pr
 ```
 
 **Requirements:**
+
 - Your `package.json` must have a `lint` script (e.g., `"lint": "eslint . --fix"`)
 - The lint script should support the `--fix` flag for auto-fixing
 
@@ -105,6 +112,7 @@ kosuke lint --no-pr
 Create a `.kosukeignore` file in your project root to exclude files and directories from analysis. Uses the same syntax as `.gitignore`.
 
 Example:
+
 ```
 # Ignore build outputs
 dist/
