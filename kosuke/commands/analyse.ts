@@ -5,34 +5,37 @@
  * - Each batch of 10-12 files gets its own Claude run
  * - Claude only sees those specific files (no repository-wide context)
  * - Validate after each batch, commit locally
- * - Push all commits at once and create single PR
+ * - If --pr flag: Push all commits and create single PR
  */
 
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import simpleGit from 'simple-git';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { discoverFiles } from '../utils/file-discovery.js';
 import { createBatches } from '../utils/batch-creator.js';
 import { runLint, runTypecheck } from '../utils/validator.js';
-import {
-  createBranch,
-  commit,
-  push,
-  reset,
-  getCurrentRepo,
-  getCurrentBranch,
-} from '../utils/git.js';
-import { createPullRequest } from '../utils/github.js';
+import { runWithPRBatched } from '../utils/pr-orchestrator.js';
 import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
 interface BatchResult {
+  batch: Batch;
   fixes: Fix[];
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: number;
+  skipped: boolean;
+}
+
+interface AnalyseResult {
+  processedBatches: BatchResult[];
+  totalFixes: number;
+  totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheCreationTokens: number;
+  totalCacheReadTokens: number;
 }
 
 /**
@@ -50,8 +53,8 @@ function calculateCost(
 ): number {
   const INPUT_COST_PER_MILLION = 3.0;
   const OUTPUT_COST_PER_MILLION = 15.0;
-  const CACHE_CREATION_COST_PER_MILLION = 3.75; // Input cost + 25% overhead
-  const CACHE_READ_COST_PER_MILLION = 0.3; // 90% discount from input cost
+  const CACHE_CREATION_COST_PER_MILLION = 3.75;
+  const CACHE_READ_COST_PER_MILLION = 0.3;
 
   const inputCost = (inputTokens / 1_000_000) * INPUT_COST_PER_MILLION;
   const outputCost = (outputTokens / 1_000_000) * OUTPUT_COST_PER_MILLION;
@@ -142,9 +145,6 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
 
       // Track token usage from the response
       if (message.type === 'result' && message.subtype === 'success') {
-        // Log the complete usage object to see all available fields
-        console.log('📊 Usage data:', JSON.stringify(message.usage, null, 2));
-
         // Capture all token types including cache-related tokens
         inputTokens += message.usage.input_tokens || 0;
         outputTokens += message.usage.output_tokens || 0;
@@ -177,12 +177,14 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
     console.log(`   💰 Cost: $${cost.toFixed(4)} (${tokenBreakdown.join(' + ')} tokens)`);
 
     return {
+      batch,
       fixes: fixCount > 0 ? fixes : [],
       inputTokens,
       outputTokens,
       cacheCreationTokens,
       cacheReadTokens,
       cost,
+      skipped: false,
     };
   } catch (error) {
     console.error(`\n   ❌ Error analyzing batch:`, error);
@@ -214,88 +216,87 @@ async function validateBatch(): Promise<boolean> {
 }
 
 /**
- * Create quality fixes PR
+ * Core analysis logic (git-agnostic)
+ * Returns batches and a function to process them
  */
-async function createQualityPR(
-  batches: Batch[],
-  totalFixes: number,
-  totalCost: number,
-  totalInputTokens: number,
-  totalOutputTokens: number,
-  totalCacheCreationTokens: number,
-  totalCacheReadTokens: number,
-  baseBranch: string
-): Promise<void> {
-  const { owner, repo } = await getCurrentRepo();
+async function prepareAnalysis(options: AnalyseOptions): Promise<{
+  batches: Batch[];
+  claudeMdRules: string;
+}> {
+  // Load CLAUDE.md rules
+  const claudeMdPath = join(process.cwd(), 'CLAUDE.md');
+  const claudeMdRules = readFileSync(claudeMdPath, 'utf-8');
+  console.log('📖 Loaded CLAUDE.md rules\n');
 
-  const date = new Date().toISOString().split('T')[0];
-
-  // Categorize by directory for summary
-  const dirSummary = batches.reduce(
-    (acc, batch) => {
-      acc[batch.name] = (acc[batch.name] || 0) + batch.files.length;
-      return acc;
-    },
-    {} as Record<string, number>
-  );
-
-  const prBody = `## 🔧 Automated Quality Fixes
-
-This PR contains automated fixes to align the codebase with **CLAUDE.md** standards.
-
-### 📈 Summary
-- **Batches Processed**: ${batches.length}
-- **Files Modified**: ${batches.reduce((sum, b) => sum + b.files.length, 0)}
-- **Fixes Applied**: ${totalFixes}
-- **💰 Total Cost**: $${totalCost.toFixed(4)}
-
-### 🔢 Token Usage
-- **Input tokens**: ${totalInputTokens.toLocaleString()} ($3/M)
-- **Output tokens**: ${totalOutputTokens.toLocaleString()} ($15/M)
-- **Cache write tokens**: ${totalCacheCreationTokens.toLocaleString()} ($3.75/M)
-- **Cache read tokens**: ${totalCacheReadTokens.toLocaleString()} ($0.30/M)
-- **Model**: Claude Sonnet 4.5
-
-### 📦 Batches
-
-${Object.entries(dirSummary)
-  .map(([dir, count]) => `- **${dir}**: ${count} files`)
-  .join('\n')}
-
-### ✅ Validation
-- Linting: **PASSED**
-- Type checking: **PASSED**
-
-### 🎯 Fix Categories
-
-All fixes follow the comprehensive rules in CLAUDE.md, including:
-- ✅ Type inference from tRPC routers
-- ✅ Centralized type management
-- ✅ Navigation patterns (Link vs Button)
-- ✅ Loading states (Skeleton components)
-- ✅ Component colocation
-- ✅ Server-side filtering
-- ✅ Python code quality (if applicable)
-
----
-
-🤖 *Generated by Kosuke CLI (\`bun run kosuke analyse\`)*
-`;
-
-  // Get current branch name from git
-  const git = simpleGit();
-  const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-
-  const prUrl = await createPullRequest({
-    owner,
-    repo,
-    title: `chore: Quality Fixes (${date})`,
-    head: currentBranch.trim(),
-    base: baseBranch,
-    body: prBody,
+  // Discover files
+  console.log('🔍 Discovering files...');
+  const files = await discoverFiles({
+    scope: options.scope,
+    types: options.types,
   });
+  console.log(`📊 Found ${files.length} files to analyze\n`);
 
-  console.log(`✅ Pull request created: ${prUrl}`);
+  if (files.length === 0) {
+    console.log('ℹ️  No files found to analyze.');
+    return { batches: [], claudeMdRules };
+  }
+
+  // Create batches (10-12 files each, grouped by directory)
+  const batches = createBatches(files, { maxSize: 10, groupBy: 'directory' });
+  console.log(`📦 Created ${batches.length} batches\n`);
+
+  return { batches, claudeMdRules };
+}
+
+/**
+ * Process all batches sequentially (git-agnostic)
+ */
+async function analyzeAllBatches(batches: Batch[], claudeMdRules: string): Promise<AnalyseResult> {
+  const processedBatches: BatchResult[] = [];
+  let totalFixes = 0;
+  let totalCost = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheCreationTokens = 0;
+  let totalCacheReadTokens = 0;
+
+  for (const [index, batch] of batches.entries()) {
+    console.log(`\n📊 Progress: ${index + 1}/${batches.length}`);
+
+    // Analyze batch (isolated Claude run)
+    const result = await analyzeBatch(batch, claudeMdRules);
+
+    // Always validate changes
+    const isValid = await validateBatch();
+
+    if (isValid && result.fixes.length > 0) {
+      console.log(`   ✅ Batch validated and ready\n`);
+
+      processedBatches.push(result);
+      totalFixes += result.fixes.length;
+      totalCost += result.cost;
+      totalInputTokens += result.inputTokens;
+      totalOutputTokens += result.outputTokens;
+      totalCacheCreationTokens += result.cacheCreationTokens;
+      totalCacheReadTokens += result.cacheReadTokens;
+    } else if (!isValid) {
+      // Validation failed, mark as skipped
+      console.warn(`   ⚠️  Validation failed, skipping batch\n`);
+      processedBatches.push({ ...result, skipped: true });
+    } else {
+      console.log(`   ℹ️  No fixes needed for this batch\n`);
+    }
+  }
+
+  return {
+    processedBatches,
+    totalFixes,
+    totalCost,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCacheCreationTokens,
+    totalCacheReadTokens,
+  };
 }
 
 /**
@@ -309,151 +310,76 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
-    if (!process.env.GITHUB_TOKEN) {
-      throw new Error('GITHUB_TOKEN environment variable is required');
-    }
 
-    // Load CLAUDE.md rules
-    const claudeMdPath = join(process.cwd(), 'CLAUDE.md');
-    const claudeMdRules = readFileSync(claudeMdPath, 'utf-8');
-    console.log('📖 Loaded CLAUDE.md rules\n');
+    // Prepare analysis (discover files, create batches)
+    const { batches, claudeMdRules } = await prepareAnalysis(options);
 
-    // Discover files
-    console.log('🔍 Discovering files...');
-    const files = await discoverFiles({
-      scope: options.scope,
-      types: options.types,
-    });
-    console.log(`📊 Found ${files.length} files to analyze\n`);
-
-    if (files.length === 0) {
-      console.log('ℹ️  No files found to analyze.');
+    if (batches.length === 0) {
+      console.log('\n✅ No files to analyze.\n');
       return;
     }
 
-    // Create batches (10-12 files each, grouped by directory)
-    const batches = createBatches(files, { maxSize: 10, groupBy: 'directory' });
-    console.log(`📦 Created ${batches.length} batches\n`);
-
-    // Dry run: just analyze and report
-    if (options.dryRun) {
-      console.log('🔍 DRY RUN MODE: Analyzing without creating PR...\n');
-      for (const [index, batch] of batches.entries()) {
-        console.log(`\nBatch ${index + 1}/${batches.length}: ${batch.name}`);
-        console.log(`Files: ${batch.files.join(', ')}`);
+    // If --pr flag is provided, wrap with PR workflow
+    if (options.pr) {
+      if (!process.env.GITHUB_TOKEN) {
+        throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
       }
-      console.log('\n✅ Dry run complete. Use without --dry-run to create PR.');
-      return;
-    }
 
-    // Get current branch for PR base (before creating new branch)
-    const baseBranch = await getCurrentBranch();
-    console.log(`📍 Base branch: ${baseBranch}\n`);
+      const date = new Date().toISOString().split('T')[0];
 
-    // Create working branch with unique name
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
-    const branchName = `quality/kosuke-analysis-${timestamp}`;
-    console.log(`🌿 Creating branch: ${branchName}\n`);
-    await createBranch(branchName, baseBranch);
+      // Create batch processors
+      const batchProcessors = batches.map((batch, index) => async (): Promise<BatchResult> => {
+        console.log(`\nBatch ${index + 1}/${batches.length}`);
+        const result = await analyzeBatch(batch, claudeMdRules);
+        return result;
+      });
 
-    // Process each batch with isolated Claude run
-    const processedBatches: Batch[] = [];
-    let totalFixes = 0;
-    let totalCost = 0;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let totalCacheCreationTokens = 0;
-    let totalCacheReadTokens = 0;
+      try {
+        const { results, prInfo } = await runWithPRBatched(
+          {
+            branchPrefix: 'quality/kosuke-analysis',
+            baseBranch: options.baseBranch,
+            commitMessage: (batchIndex: number) =>
+              `fix(quality): ${batches[batchIndex].name} - improvements`,
+            prTitle: `chore: Quality Fixes (${date})`,
+            prBody: '', // TODO: Generate detailed PR body after processing
+            validateBeforeCommit: validateBatch,
+          },
+          batchProcessors
+        );
 
-    for (const [index, batch] of batches.entries()) {
-      console.log(`\n📊 Progress: ${index + 1}/${batches.length}`);
+        // Calculate totals
+        const processedBatches = results.filter((r) => !r.skipped);
+        const totalFixes = processedBatches.reduce((sum, r) => sum + r.fixes.length, 0);
+        const totalCost = processedBatches.reduce((sum, r) => sum + r.cost, 0);
 
-      // Analyze batch (isolated Claude run)
-      const result = await analyzeBatch(batch, claudeMdRules);
-
-      if (result.fixes.length > 0) {
-        // Validate changes
-        const isValid = await validateBatch();
-
-        if (isValid) {
-          // Commit batch
-          try {
-            await commit(`fix(quality): ${batch.name} - ${result.fixes.length} improvements`);
-            console.log(`   ✅ Batch committed\n`);
-
-            processedBatches.push(batch);
-            totalFixes += result.fixes.length;
-            totalCost += result.cost;
-            totalInputTokens += result.inputTokens;
-            totalOutputTokens += result.outputTokens;
-            totalCacheCreationTokens += result.cacheCreationTokens;
-            totalCacheReadTokens += result.cacheReadTokens;
-          } catch (error) {
-            console.error(`   ❌ Failed to commit batch:`, error);
-            console.warn(`   ⚠️  Rolling back batch\n`);
-            await reset();
-          }
-        } else {
-          // Validation failed, rollback
-          console.warn(`   ⚠️  Validation failed, rolling back batch\n`);
-          await reset();
+        console.log('\n✅ Analysis complete!');
+        console.log(`📊 Processed ${processedBatches.length}/${batches.length} batches`);
+        console.log(`🔧 Applied ${totalFixes} fixes`);
+        console.log(`💰 Total cost: $${totalCost.toFixed(4)}`);
+        console.log(`🔗 PR: ${prInfo.prUrl}`);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'No changes to commit') {
+          console.log('\n✅ No fixes needed! Codebase is already compliant.\n');
+          return;
         }
-      } else {
-        console.log(`   ℹ️  No fixes needed for this batch\n`);
+        throw error;
       }
+    } else {
+      // Run core logic without PR
+      const result = await analyzeAllBatches(batches, claudeMdRules);
+
+      if (result.processedBatches.length === 0) {
+        console.log('\n✅ No fixes needed! Codebase is already compliant.\n');
+        return;
+      }
+
+      console.log('\n✅ Analysis complete!');
+      console.log(`📊 Processed ${result.processedBatches.length}/${batches.length} batches`);
+      console.log(`🔧 Applied ${result.totalFixes} fixes`);
+      console.log(`💰 Total cost: $${result.totalCost.toFixed(4)}`);
+      console.log('\nℹ️  Changes applied locally. Use --pr flag to create a pull request.');
     }
-
-    if (processedBatches.length === 0) {
-      console.log('\n✅ No fixes needed! Codebase is already compliant.\n');
-      console.log('ℹ️  Note: Created branch will not be pushed as there are no changes.');
-      return;
-    }
-
-    console.log(`\n📊 Summary of processed batches:`);
-    console.log(`   ✅ Successfully processed: ${processedBatches.length}`);
-    console.log(
-      `   ⚠️  Skipped (no changes or validation failed): ${batches.length - processedBatches.length}`
-    );
-
-    // Push all commits
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('📤 Pushing all commits...\n');
-    try {
-      await push(branchName);
-      console.log('✅ Commits pushed successfully\n');
-    } catch (error) {
-      console.error('❌ Failed to push commits:', error);
-      throw new Error(
-        `Failed to push branch ${branchName}: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    // Create PR
-    console.log('📋 Creating pull request...\n');
-    try {
-      await createQualityPR(
-        processedBatches,
-        totalFixes,
-        totalCost,
-        totalInputTokens,
-        totalOutputTokens,
-        totalCacheCreationTokens,
-        totalCacheReadTokens,
-        baseBranch
-      );
-    } catch (error) {
-      console.error('❌ Failed to create pull request:', error);
-      console.log(`\nℹ️  Changes have been pushed to branch: ${branchName}`);
-      console.log(`   You can manually create a PR from this branch.`);
-      throw new Error(
-        `Failed to create PR: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    console.log('\n✅ Quality analysis complete!');
-    console.log(`📊 Processed ${processedBatches.length}/${batches.length} batches`);
-    console.log(`🔧 Applied ${totalFixes} fixes`);
-    console.log(`💰 Total cost: $${totalCost.toFixed(4)}`);
   } catch (error) {
     console.error('\n❌ Analysis failed:', error);
     throw error;

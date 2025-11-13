@@ -25,9 +25,21 @@ type FixType =
   | 'other';
 
 export interface AnalyseOptions {
-  dryRun?: boolean;
+  pr?: boolean;
+  baseBranch?: string;
   scope?: string;
   types?: string[];
+}
+
+export interface LintOptions {
+  pr?: boolean;
+  baseBranch?: string;
+}
+
+export interface SyncRulesOptions {
+  force?: boolean;
+  pr?: boolean;
+  baseBranch?: string;
 }
 
 export interface RulesAdaptation {

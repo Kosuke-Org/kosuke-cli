@@ -116,13 +116,6 @@ export async function push(branchName: string): Promise<void> {
 }
 
 /**
- * Reset working directory to HEAD
- */
-export async function reset(): Promise<void> {
-  await git.reset(['--hard', 'HEAD']);
-}
-
-/**
  * Get the current branch name
  */
 export async function getCurrentBranch(): Promise<string> {

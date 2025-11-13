@@ -30,22 +30,27 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
-  if (!command) {
+  if (!command || command === '--help' || command === '-h' || command === 'help') {
     showHelp();
-    process.exit(1);
+    process.exit(0);
   }
 
   try {
     switch (command) {
       case 'sync-rules': {
-        const hasForceFlag = args.includes('--force');
-        await syncRulesCommand(hasForceFlag);
+        const options = {
+          force: args.includes('--force'),
+          pr: args.includes('--pr'),
+          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+        };
+        await syncRulesCommand(options);
         break;
       }
 
       case 'analyse': {
         const options = {
-          dryRun: args.includes('--dry-run'),
+          pr: args.includes('--pr'),
+          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           scope: args.find((arg) => arg.startsWith('--scope='))?.split('=')[1],
           types: args
             .find((arg) => arg.startsWith('--types='))
@@ -58,8 +63,8 @@ async function main() {
 
       case 'lint': {
         const options = {
-          dryRun: args.includes('--dry-run'),
-          noPr: args.includes('--no-pr'),
+          pr: args.includes('--pr'),
+          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
         };
         await lintCommand(options);
         break;
@@ -89,43 +94,49 @@ function showHelp() {
 
 COMMANDS:
 
-  sync-rules [--force]
+  sync-rules [options]
     Sync rules and documentation from kosuke-template
     
     Options:
-      --force    Compare files regardless of recent commit history
+      --force               Compare files regardless of recent commit history
+      --pr                  Create a pull request with changes
+      --base-branch=<name>  Base branch for PR (default: current branch)
     
     Examples:
-      kosuke sync-rules
-      kosuke sync-rules --force
+      kosuke sync-rules                    # Local changes only
+      kosuke sync-rules --force            # Force comparison
+      kosuke sync-rules --pr               # Create PR
+      kosuke sync-rules --pr --base-branch=develop
 
-  analyse
+  analyse [options]
     Analyze and fix code quality issues against CLAUDE.md rules
-    Creates a single PR with all fixes from multiple isolated Claude runs
+    Applies fixes locally by default
     
     Options:
-      --dry-run       Report violations only, don't create PR
-      --scope=<dirs>  Analyze specific directories (comma-separated)
-      --types=<exts>  Analyze specific file types (comma-separated)
+      --pr                  Create a pull request with fixes
+      --base-branch=<name>  Base branch for PR (default: current branch)
+      --scope=<dirs>        Analyze specific directories (comma-separated)
+      --types=<exts>        Analyze specific file types (comma-separated)
     
     Examples:
-      kosuke analyse
+      kosuke analyse                       # Local fixes only
+      kosuke analyse --pr                  # Create PR with fixes
       kosuke analyse --scope=hooks,lib/trpc
       kosuke analyse --types=ts,tsx
-      kosuke analyse --dry-run
+      kosuke analyse --pr --base-branch=main
 
-  lint
+  lint [options]
     Use Claude AI to automatically fix linting errors
-    Creates a PR with all lint fixes
+    Applies fixes locally by default
     
     Options:
-      --dry-run   Report errors only, don't fix them
-      --no-pr     Fix locally without creating PR
+      --pr                  Create a pull request with fixes
+      --base-branch=<name>  Base branch for PR (default: current branch)
     
     Examples:
-      kosuke lint
-      kosuke lint --dry-run
-      kosuke lint --no-pr
+      kosuke lint                          # Local fixes only
+      kosuke lint --pr                     # Create PR with fixes
+      kosuke lint --pr --base-branch=main
 
   requirements
     Interactive requirements gathering with Claude AI
@@ -134,10 +145,15 @@ COMMANDS:
     Examples:
       kosuke requirements
 
+WORKFLOW:
+
+  By default, all commands apply changes locally without git operations.
+  Use the --pr flag to create a pull request with the changes.
+
 ENVIRONMENT VARIABLES:
 
   ANTHROPIC_API_KEY   Required for Claude API access
-  GITHUB_TOKEN        Required for creating pull requests
+  GITHUB_TOKEN        Required when using --pr flag
 
 CONFIGURATION:
 

@@ -6,18 +6,23 @@ import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
-import { getCurrentRepo, isKosukeTemplateRepo } from '../utils/git.js';
-import { createPullRequest } from '../utils/github.js';
+import { isKosukeTemplateRepo } from '../utils/git.js';
+import { runWithPR } from '../utils/pr-orchestrator.js';
 import { runFormat, runLint } from '../utils/validator.js';
-import type { RulesAdaptation } from '../types.js';
+import type { RulesAdaptation, SyncRulesOptions } from '../types.js';
 
 // Constants
 const KOSUKE_TEMPLATE_REPO = 'https://github.com/Kosuke-Org/kosuke-template.git';
 const KOSUKE_TEMPLATE_BRANCH = 'main';
 const TEMP_DIR = '.tmp/kosuke-template';
-const TARGET_BRANCH = 'main';
 const RULES_FILE = '.cursor/rules/general.mdc';
 const CLAUDE_MD_FILE = 'CLAUDE.md';
+
+interface SyncResult {
+  adaptation: RulesAdaptation;
+  claudeMdContent: string;
+  changesSummary: string;
+}
 
 /**
  * Clone or update kosuke-template repository
@@ -239,45 +244,68 @@ Keep it concise and developer-friendly. Use bullet points starting with emojis.`
 }
 
 /**
- * Create PR with adapted rules
+ * Core sync logic (git-agnostic)
  */
-async function createRulesSyncPR(
-  adaptation: RulesAdaptation,
-  claudeMdContent: string,
-  changesSummary: string
-): Promise<void> {
-  const { owner, repo } = await getCurrentRepo();
-  const git: SimpleGit = simpleGit();
+async function syncRulesCore(force: boolean): Promise<SyncResult> {
+  // Clone/update kosuke-template
+  const git = await cloneOrUpdateKosukeTemplate();
 
-  // Generate unique branch name
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
-  const branchName = `sync/rules-${timestamp}`;
+  if (force) {
+    console.log('⚡ Force mode: Comparing rules file...\n');
+  } else {
+    // Check if rules file changed in last 24 hours
+    console.log('📅 Checking for changes in last 24 hours...');
+    const hasChanges = await checkRulesChangedInLast24Hours(git);
 
-  console.log(`🌿 Creating branch: ${branchName}`);
-
-  // Create and checkout new branch
-  await git.checkout(TARGET_BRANCH);
-  await git.pull('origin', TARGET_BRANCH);
-
-  // Check if branch already exists locally and delete it
-  try {
-    const branches = await git.branchLocal();
-    if (branches.all.includes(branchName)) {
-      console.log(`   Deleting existing local branch: ${branchName}`);
-      await git.deleteLocalBranch(branchName, true);
+    if (!hasChanges) {
+      console.log('✅ No changes to rules in last 24 hours. Nothing to sync.');
+      console.log('   Use --force flag to compare files regardless of recent commits.');
+      throw new Error('No recent changes');
     }
-  } catch {
-    // Branch doesn't exist, continue
+
+    console.log(`   ✅ Found changes in ${RULES_FILE}\n`);
   }
 
-  await git.checkoutLocalBranch(branchName);
-
-  // Write adapted content to files
+  // Read current repository versions
   const workspaceRoot = process.cwd();
+  const kosukeFile = join(TEMP_DIR, RULES_FILE);
+  const currentFile = join(workspaceRoot, RULES_FILE);
+
+  if (!existsSync(kosukeFile)) {
+    throw new Error(`${RULES_FILE} not found in kosuke-template`);
+  }
+
+  const kosukeContent = readFileSync(kosukeFile, 'utf-8');
+  const currentContent = existsSync(currentFile) ? readFileSync(currentFile, 'utf-8') : '';
+
+  // Check if content is actually different
+  if (kosukeContent === currentContent) {
+    console.log(`ℹ️  No differences detected in ${RULES_FILE}. Nothing to sync.`);
+    throw new Error('No differences detected');
+  }
+
+  console.log(`📥 Processing ${RULES_FILE}...`);
+  const adaptation = await adaptRulesWithClaude(RULES_FILE, currentContent);
+
+  // Abort if no changes
+  if (!adaptation.relevant) {
+    console.log('✅ No relevant changes to sync. Aborting.');
+    throw new Error('No relevant changes');
+  }
+
+  // Generate CLAUDE.md from adapted general.mdc
+  console.log(`\n📄 Generating ${CLAUDE_MD_FILE} from ${RULES_FILE}...`);
+  const claudeMdContent = generateClaudeMd(adaptation.adaptedContent);
+
+  // Generate LLM summary of changes
+  const changesSummary = await generateChangesSummary(currentContent, adaptation.adaptedContent);
+
+  // Write files locally
+  const workspaceRootPath = process.cwd();
   console.log('📝 Writing adapted files...');
 
   // Write general.mdc
-  const rulesFile = join(workspaceRoot, RULES_FILE);
+  const rulesFile = join(workspaceRootPath, RULES_FILE);
   const rulesDir = dirname(rulesFile);
   if (!existsSync(rulesDir)) {
     mkdirSync(rulesDir, { recursive: true });
@@ -286,12 +314,9 @@ async function createRulesSyncPR(
   console.log(`   ✅ ${RULES_FILE}`);
 
   // Write CLAUDE.md (stripped version)
-  const claudeFile = join(workspaceRoot, CLAUDE_MD_FILE);
+  const claudeFile = join(workspaceRootPath, CLAUDE_MD_FILE);
   writeFileSync(claudeFile, claudeMdContent, 'utf-8');
   console.log(`   ✅ ${CLAUDE_MD_FILE}`);
-
-  // Add files to git
-  await git.add([RULES_FILE, CLAUDE_MD_FILE]);
 
   // Run formatting and linting
   console.log('\n🔧 Running formatting and linting...');
@@ -302,46 +327,17 @@ async function createRulesSyncPR(
   await runLint();
   console.log('   ✅ Linting completed');
 
-  // Add any formatting/linting changes
-  await git.add(['-A']);
-
-  // Commit changes
-  await git.commit('chore: sync rules and documentation from kosuke-template', ['--no-verify']);
-
-  console.log('\n📤 Pushing branch...');
-  await git.push('origin', branchName, ['--set-upstream']);
-
-  // Create PR
-  console.log('🔀 Creating pull request...');
-
-  const date = new Date().toISOString().split('T')[0];
-
-  // Build PR body with LLM-generated summary
-  const prBody = `## 🔄 Sync Rules from Kosuke Template
-
-${changesSummary}
-
----
-
-🤖 *Auto-generated by \`bun run kosuke sync-rules\`*
-`;
-
-  const prUrl = await createPullRequest({
-    owner,
-    repo,
-    title: `chore: sync rules & docs from kosuke-template (${date})`,
-    head: branchName,
-    base: TARGET_BRANCH,
-    body: prBody,
-  });
-
-  console.log(`✅ Pull request created: ${prUrl}`);
+  return {
+    adaptation,
+    claudeMdContent,
+    changesSummary,
+  };
 }
 
 /**
  * Main sync-rules command
  */
-export async function syncRulesCommand(force: boolean = false): Promise<void> {
+export async function syncRulesCommand(options: SyncRulesOptions = {}): Promise<void> {
   console.log('🚀 Starting Rules & Documentation Sync...\n');
 
   try {
@@ -357,68 +353,72 @@ export async function syncRulesCommand(force: boolean = false): Promise<void> {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
-    if (!process.env.GITHUB_TOKEN) {
-      throw new Error('GITHUB_TOKEN environment variable is required');
-    }
 
-    // Clone/update kosuke-template
-    const git = await cloneOrUpdateKosukeTemplate();
-
-    if (force) {
-      console.log('⚡ Force mode: Comparing rules file...\n');
-    } else {
-      // Check if rules file changed in last 24 hours
-      console.log('📅 Checking for changes in last 24 hours...');
-      const hasChanges = await checkRulesChangedInLast24Hours(git);
-
-      if (!hasChanges) {
-        console.log('✅ No changes to rules in last 24 hours. Nothing to sync.');
-        console.log('   Use --force flag to compare files regardless of recent commits.');
-        return;
+    // If --pr flag is provided, wrap with PR workflow
+    if (options.pr) {
+      if (!process.env.GITHUB_TOKEN) {
+        throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
       }
 
-      console.log(`   ✅ Found changes in ${RULES_FILE}\n`);
+      const date = new Date().toISOString().split('T')[0];
+
+      try {
+        const { result, prInfo } = await runWithPR(
+          {
+            branchPrefix: 'sync/rules',
+            baseBranch: options.baseBranch,
+            commitMessage: 'chore: sync rules and documentation from kosuke-template',
+            prTitle: `chore: sync rules & docs from kosuke-template (${date})`,
+            prBody: `## 🔄 Sync Rules from Kosuke Template
+
+This PR syncs rules and documentation from the kosuke-template repository.
+
+### 📝 Changes
+- Updated \`.cursor/rules/general.mdc\`
+- Updated \`CLAUDE.md\`
+
+---
+
+🤖 *Auto-generated by \`kosuke sync-rules --pr\`*`,
+          },
+          async () => syncRulesCore(options.force || false)
+        );
+
+        console.log('\n✅ Rules sync completed successfully!');
+        console.log(`📝 Changes summary: ${result.changesSummary}`);
+        console.log(`🔗 PR: ${prInfo.prUrl}`);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === 'No recent changes' ||
+            error.message === 'No differences detected' ||
+            error.message === 'No relevant changes')
+        ) {
+          console.log('\n✅ No sync needed.');
+          return;
+        }
+        throw error;
+      }
+    } else {
+      // Run core logic without PR
+      try {
+        await syncRulesCore(options.force || false);
+
+        console.log('\n✅ Rules sync completed successfully!');
+        console.log('\nℹ️  Changes applied locally. Use --pr flag to create a pull request.');
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === 'No recent changes' ||
+            error.message === 'No differences detected' ||
+            error.message === 'No relevant changes')
+        ) {
+          console.log('\n✅ No sync needed.');
+          return;
+        }
+        throw error;
+      }
     }
-
-    // Read current repository versions
-    const workspaceRoot = process.cwd();
-    const kosukeFile = join(TEMP_DIR, RULES_FILE);
-    const currentFile = join(workspaceRoot, RULES_FILE);
-
-    if (!existsSync(kosukeFile)) {
-      throw new Error(`${RULES_FILE} not found in kosuke-template`);
-    }
-
-    const kosukeContent = readFileSync(kosukeFile, 'utf-8');
-    const currentContent = existsSync(currentFile) ? readFileSync(currentFile, 'utf-8') : '';
-
-    // Check if content is actually different
-    if (kosukeContent === currentContent) {
-      console.log(`ℹ️  No differences detected in ${RULES_FILE}. Nothing to sync.`);
-      return;
-    }
-
-    console.log(`📥 Processing ${RULES_FILE}...`);
-    const adaptation = await adaptRulesWithClaude(RULES_FILE, currentContent);
-
-    // Abort if no changes
-    if (!adaptation.relevant) {
-      console.log('✅ No relevant changes to sync. Aborting.');
-      return;
-    }
-
-    // Generate CLAUDE.md from adapted general.mdc
-    console.log(`\n📄 Generating ${CLAUDE_MD_FILE} from ${RULES_FILE}...`);
-    const claudeMdContent = generateClaudeMd(adaptation.adaptedContent);
-
-    // Generate LLM summary of changes
-    const changesSummary = await generateChangesSummary(currentContent, adaptation.adaptedContent);
-
-    // Create PR with adapted content
-    console.log(`\n📋 Creating pull request...\n`);
-    await createRulesSyncPR(adaptation, claudeMdContent, changesSummary);
-
-    console.log('\n✅ Rules sync completed successfully!');
   } catch (error) {
     console.error('\n❌ Sync failed:', error);
     throw error;

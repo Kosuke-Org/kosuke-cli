@@ -18,22 +18,32 @@ npx @kosuke-ai/cli <command>
 
 ## Prerequisites
 
-Before using Kosuke CLI, set up the required environment variables:
+Set up the required environment variable:
 
 ```bash
 # Required for Claude API access
 export ANTHROPIC_API_KEY="your-api-key-here"
 
-# Required for creating pull requests
+# Optional: Only required when using --pr flag
 export GITHUB_TOKEN="your-github-token-here"
 ```
 
 You can also create a `.env` file in your project root:
 
-```
+```env
 ANTHROPIC_API_KEY=your-api-key-here
 GITHUB_TOKEN=your-github-token-here
 ```
+
+## Workflow
+
+By default, all commands apply changes **locally** without git operations. This allows you to:
+
+- Review changes before committing
+- Test fixes in your local environment
+- Iterate quickly without creating PRs
+
+Use the `--pr` flag to automatically create a pull request with the changes.
 
 ## Commands
 
@@ -44,28 +54,40 @@ Sync rules and documentation from kosuke-template repository.
 **Options:**
 
 - `--force` - Compare files regardless of recent commit history
+- `--pr` - Create a pull request with the changes
+- `--base-branch=<name>` - Base branch for PR (default: current branch)
 
 **Examples:**
 
 ```bash
+# Sync locally
 kosuke sync-rules
+
+# Force comparison and sync locally
 kosuke sync-rules --force
+
+# Create PR with synced changes
+kosuke sync-rules --pr
+
+# Create PR with custom base branch
+kosuke sync-rules --pr --base-branch=develop
 ```
 
 ### `kosuke analyse`
 
-Analyze and fix code quality issues against CLAUDE.md rules. Creates a single PR with all fixes from multiple isolated Claude runs.
+Analyze and fix code quality issues against CLAUDE.md rules. Applies fixes locally by default.
 
 **Options:**
 
-- `--dry-run` - Report violations only, don't create PR
+- `--pr` - Create a pull request with fixes
+- `--base-branch=<name>` - Base branch for PR (default: current branch)
 - `--scope=<dirs>` - Analyze specific directories (comma-separated)
 - `--types=<exts>` - Analyze specific file types (comma-separated)
 
 **Examples:**
 
 ```bash
-# Analyze entire project
+# Analyze and fix locally
 kosuke analyse
 
 # Analyze specific directories
@@ -74,35 +96,38 @@ kosuke analyse --scope=hooks,lib/trpc
 # Analyze specific file types
 kosuke analyse --types=ts,tsx
 
-# Dry run (report only)
-kosuke analyse --dry-run
+# Create PR with fixes
+kosuke analyse --pr
+
+# Create PR with custom base branch
+kosuke analyse --pr --base-branch=main
 ```
 
 ### `kosuke lint`
 
-Use Claude AI to automatically fix linting errors in your codebase. Runs the lint command from package.json, analyzes the errors, and applies fixes.
+Use Claude AI to automatically fix linting errors. Applies fixes locally by default.
 
 **Options:**
 
-- `--dry-run` - Report errors only, don't fix them
-- `--no-pr` - Fix locally without creating PR
+- `--pr` - Create a pull request with fixes
+- `--base-branch=<name>` - Base branch for PR (default: current branch)
 
 **Examples:**
 
 ```bash
-# Fix all linting errors and create PR
+# Fix linting errors locally
 kosuke lint
 
-# Preview what errors would be fixed
-kosuke lint --dry-run
+# Create PR with fixes
+kosuke lint --pr
 
-# Fix errors locally without creating PR
-kosuke lint --no-pr
+# Create PR with custom base branch
+kosuke lint --pr --base-branch=main
 ```
 
 **Requirements:**
 
-- Your `package.json` must have a `lint` script (e.g., `"lint": "eslint . --fix"`)
+- Your `package.json` must have a `lint` script (e.g., `"lint": "eslint ."`)
 - The lint script should support the `--fix` flag for auto-fixing
 
 ### `kosuke requirements`
@@ -146,7 +171,7 @@ Create a `.kosukeignore` file in your project root to exclude files and director
 
 Example:
 
-```
+```gitignore
 # Ignore build outputs
 dist/
 build/
