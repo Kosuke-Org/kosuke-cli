@@ -45,3 +45,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Notify Slack - Success
+        if: success()
+        run: |
+          curl -X POST --data '{"text":"✅ NPM Package Published Successfully"}' ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack - Failure
+        if: failure()
+        run: |
+          curl -X POST --data "{\"text\":\"❌ NPM Package Publish Failed\nAction: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" ${{ secrets.SLACK_WEBHOOK_URL }}
