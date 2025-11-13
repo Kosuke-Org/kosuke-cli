@@ -6,10 +6,14 @@
  * Commands:
  *   sync-rules [--force]  Sync rules from kosuke-template
  *   analyse               Analyze and fix code quality issues
+ *   lint                  Fix linting errors with Claude AI
+ *   requirements          Interactive requirements gathering
  *
  * Usage:
  *   bun run kosuke sync-rules
  *   bun run kosuke analyse
+ *   bun run kosuke lint
+ *   bun run kosuke requirements
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -20,6 +24,7 @@ import 'dotenv/config';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { analyseCommand } from './kosuke/commands/analyse.js';
 import { lintCommand } from './kosuke/commands/lint.js';
+import { requirementsCommand } from './kosuke/commands/requirements.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -57,6 +62,11 @@ async function main() {
           noPr: args.includes('--no-pr'),
         };
         await lintCommand(options);
+        break;
+      }
+
+      case 'requirements': {
+        await requirementsCommand();
         break;
       }
 
@@ -116,6 +126,13 @@ COMMANDS:
       kosuke lint
       kosuke lint --dry-run
       kosuke lint --no-pr
+
+  requirements
+    Interactive requirements gathering with Claude AI
+    Generates a comprehensive docs.md file
+    
+    Examples:
+      kosuke requirements
 
 ENVIRONMENT VARIABLES:
 

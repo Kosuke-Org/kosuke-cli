@@ -105,6 +105,39 @@ kosuke lint --no-pr
 - Your `package.json` must have a `lint` script (e.g., `"lint": "eslint . --fix"`)
 - The lint script should support the `--fix` flag for auto-fixing
 
+### `kosuke requirements`
+
+Interactive requirements gathering tool powered by Claude AI. Creates a comprehensive `docs.md` file through a conversational workflow.
+
+**How it works:**
+
+1. You describe your web application
+2. Claude analyzes and extracts core functionalities
+3. Claude asks clarification questions
+4. You answer iteratively until requirements are clear
+5. Claude generates a detailed `docs.md` with:
+   - Product Overview
+   - Core Functionalities
+   - Technical Architecture
+   - User Flows
+   - Database Schema
+   - API Endpoints
+   - Implementation Notes
+
+**Example:**
+
+```bash
+kosuke requirements
+```
+
+**Features:**
+
+- ✨ Fully interactive conversation workflow
+- 💰 Real-time cost tracking (shows token usage)
+- 🔄 Iterative refinement until requirements are comprehensive
+- 📝 Structured markdown output in `docs.md`
+- 🌐 Optimized for web application projects
+
 ## Configuration
 
 ### `.kosukeignore`
