@@ -19,10 +19,17 @@
   "license": "ISC",
   "author": "filippo.pedrazzini@kosuke.ai",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
   "bin": {
     "kosuke": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/lib.js",
+      "types": "./dist/lib.d.ts"
+    },
+    "./cli": "./dist/index.js"
   },
   "files": [
     "dist",

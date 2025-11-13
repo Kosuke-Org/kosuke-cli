@@ -16,6 +16,6 @@
     "moduleResolution": "node",
     "types": ["node"]
   },
-  "include": ["index.ts", "kosuke/**/*.ts"],
+  "include": ["index.ts", "lib.ts", "kosuke/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

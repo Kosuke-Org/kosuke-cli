@@ -16,6 +16,67 @@ Or use with npx (no installation required):
 npx @kosuke-ai/cli <command>
 ```
 
+### Use as Library in TypeScript Projects
+
+Install as a project dependency:
+
+```bash
+npm install @kosuke-ai/cli
+```
+
+Then import and use programmatically:
+
+```typescript
+import {
+  analyseCommand,
+  lintCommand,
+  syncRulesCommand,
+  requirementsCommand,
+  discoverFiles,
+  createBatches,
+  runLint,
+  runTypecheck,
+} from '@kosuke-ai/cli';
+
+// Run commands programmatically
+await analyseCommand({
+  scope: 'src/components',
+  pr: false,
+});
+
+await lintCommand({ pr: false });
+
+// Use utilities
+const files = await discoverFiles({
+  types: ['ts', 'tsx'],
+  scope: 'lib',
+});
+
+const batches = createBatches(files, {
+  maxSize: 10,
+  groupBy: 'directory',
+});
+
+const lintResult = await runLint();
+if (!lintResult.success) {
+  console.error('Linting failed:', lintResult.error);
+}
+```
+
+#### Local Development with npm link
+
+To develop against a local version of kosuke-cli:
+
+```bash
+# In kosuke-cli directory
+npm run dev:link    # Builds, links, and watches for changes
+
+# In your project directory
+npm link @kosuke-ai/cli
+```
+
+Now your project will use the local kosuke-cli, and changes will be reflected automatically.
+
 ## Prerequisites
 
 Set up the required environment variable:
