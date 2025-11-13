@@ -15,7 +15,7 @@ import { join } from 'path';
 import { discoverFiles } from '../utils/file-discovery.js';
 import { createBatches } from '../utils/batch-creator.js';
 import { runLint, runTypecheck } from '../utils/validator.js';
-import { createBranch, commit, push, reset, getCurrentRepo } from '../utils/git.js';
+import { createBranch, commit, push, reset, getCurrentRepo, getCurrentBranch } from '../utils/git.js';
 import { createPullRequest } from '../utils/github.js';
 import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
@@ -215,7 +215,8 @@ async function createQualityPR(
   totalInputTokens: number,
   totalOutputTokens: number,
   totalCacheCreationTokens: number,
-  totalCacheReadTokens: number
+  totalCacheReadTokens: number,
+  baseBranch: string
 ): Promise<void> {
   const { owner, repo } = await getCurrentRepo();
 
@@ -282,7 +283,7 @@ All fixes follow the comprehensive rules in CLAUDE.md, including:
     repo,
     title: `chore: Quality Fixes (${date})`,
     head: currentBranch.trim(),
-    base: 'main',
+    base: baseBranch,
     body: prBody,
   });
 
@@ -337,11 +338,15 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
       return;
     }
 
+    // Get current branch for PR base (before creating new branch)
+    const baseBranch = await getCurrentBranch();
+    console.log(`📍 Base branch: ${baseBranch}\n`);
+
     // Create working branch with unique name
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
     const branchName = `quality/kosuke-analysis-${timestamp}`;
     console.log(`🌿 Creating branch: ${branchName}\n`);
-    await createBranch(branchName);
+    await createBranch(branchName, baseBranch);
 
     // Process each batch with isolated Claude run
     const processedBatches: Batch[] = [];
@@ -364,16 +369,22 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
 
         if (isValid) {
           // Commit batch
-          await commit(`fix(quality): ${batch.name} - ${result.fixes.length} improvements`);
-          console.log(`   ✅ Batch committed\n`);
+          try {
+            await commit(`fix(quality): ${batch.name} - ${result.fixes.length} improvements`);
+            console.log(`   ✅ Batch committed\n`);
 
-          processedBatches.push(batch);
-          totalFixes += result.fixes.length;
-          totalCost += result.cost;
-          totalInputTokens += result.inputTokens;
-          totalOutputTokens += result.outputTokens;
-          totalCacheCreationTokens += result.cacheCreationTokens;
-          totalCacheReadTokens += result.cacheReadTokens;
+            processedBatches.push(batch);
+            totalFixes += result.fixes.length;
+            totalCost += result.cost;
+            totalInputTokens += result.inputTokens;
+            totalOutputTokens += result.outputTokens;
+            totalCacheCreationTokens += result.cacheCreationTokens;
+            totalCacheReadTokens += result.cacheReadTokens;
+          } catch (error) {
+            console.error(`   ❌ Failed to commit batch:`, error);
+            console.warn(`   ⚠️  Rolling back batch\n`);
+            await reset();
+          }
         } else {
           // Validation failed, rollback
           console.warn(`   ⚠️  Validation failed, rolling back batch\n`);
@@ -385,26 +396,45 @@ export async function analyseCommand(options: AnalyseOptions = {}): Promise<void
     }
 
     if (processedBatches.length === 0) {
-      console.log('✅ No fixes needed! Codebase is already compliant.\n');
+      console.log('\n✅ No fixes needed! Codebase is already compliant.\n');
+      console.log('ℹ️  Note: Created branch will not be pushed as there are no changes.');
       return;
     }
+
+    console.log(`\n📊 Summary of processed batches:`);
+    console.log(`   ✅ Successfully processed: ${processedBatches.length}`);
+    console.log(`   ⚠️  Skipped (no changes or validation failed): ${batches.length - processedBatches.length}`);
 
     // Push all commits
     console.log(`\n${'='.repeat(60)}`);
     console.log('📤 Pushing all commits...\n');
-    await push(branchName);
+    try {
+      await push(branchName);
+      console.log('✅ Commits pushed successfully\n');
+    } catch (error) {
+      console.error('❌ Failed to push commits:', error);
+      throw new Error(`Failed to push branch ${branchName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     // Create PR
     console.log('📋 Creating pull request...\n');
-    await createQualityPR(
-      processedBatches,
-      totalFixes,
-      totalCost,
-      totalInputTokens,
-      totalOutputTokens,
-      totalCacheCreationTokens,
-      totalCacheReadTokens
-    );
+    try {
+      await createQualityPR(
+        processedBatches,
+        totalFixes,
+        totalCost,
+        totalInputTokens,
+        totalOutputTokens,
+        totalCacheCreationTokens,
+        totalCacheReadTokens,
+        baseBranch
+      );
+    } catch (error) {
+      console.error('❌ Failed to create pull request:', error);
+      console.log(`\nℹ️  Changes have been pushed to branch: ${branchName}`);
+      console.log(`   You can manually create a PR from this branch.`);
+      throw new Error(`Failed to create PR: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     console.log('\n✅ Quality analysis complete!');
     console.log(`📊 Processed ${processedBatches.length}/${batches.length} batches`);

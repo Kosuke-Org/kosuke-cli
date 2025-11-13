@@ -19,6 +19,7 @@
 import 'dotenv/config';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { analyseCommand } from './kosuke/commands/analyse.js';
+import { lintCommand } from './kosuke/commands/lint.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -47,6 +48,15 @@ async function main() {
             ?.split(','),
         };
         await analyseCommand(options);
+        break;
+      }
+
+      case 'lint': {
+        const options = {
+          dryRun: args.includes('--dry-run'),
+          noPr: args.includes('--no-pr'),
+        };
+        await lintCommand(options);
         break;
       }
 
@@ -93,6 +103,19 @@ COMMANDS:
       kosuke analyse --scope=hooks,lib/trpc
       kosuke analyse --types=ts,tsx
       kosuke analyse --dry-run
+
+  lint
+    Use Claude AI to automatically fix linting errors
+    Creates a PR with all lint fixes
+    
+    Options:
+      --dry-run   Report errors only, don't fix them
+      --no-pr     Fix locally without creating PR
+    
+    Examples:
+      kosuke lint
+      kosuke lint --dry-run
+      kosuke lint --no-pr
 
 ENVIRONMENT VARIABLES:
 

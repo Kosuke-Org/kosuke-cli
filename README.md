@@ -74,6 +74,30 @@ kosuke analyse --types=ts,tsx
 kosuke analyse --dry-run
 ```
 
+### `kosuke lint`
+
+Use Claude AI to automatically fix linting errors in your codebase. Runs the lint command from package.json, analyzes the errors, and applies fixes.
+
+**Options:**
+- `--dry-run` - Report errors only, don't fix them
+- `--no-pr` - Fix locally without creating PR
+
+**Examples:**
+```bash
+# Fix all linting errors and create PR
+kosuke lint
+
+# Preview what errors would be fixed
+kosuke lint --dry-run
+
+# Fix errors locally without creating PR
+kosuke lint --no-pr
+```
+
+**Requirements:**
+- Your `package.json` must have a `lint` script (e.g., `"lint": "eslint . --fix"`)
+- The lint script should support the `--fix` flag for auto-fixing
+
 ## Configuration
 
 ### `.kosukeignore`
@@ -117,66 +141,3 @@ npm run dev <command>
 npm link
 kosuke <command>
 ```
-
-## Publishing
-
-This project uses GitHub Actions for automated publishing to npm.
-
-### How to Publish a New Version
-
-1. **Update the version** in `package.json`:
-   ```bash
-   npm version patch  # 0.0.1 -> 0.0.2
-   npm version minor  # 0.0.1 -> 0.1.0
-   npm version major  # 0.0.1 -> 1.0.0
-   ```
-
-2. **Push the version tag**:
-   ```bash
-   git push origin main --tags
-   ```
-
-3. **Create a GitHub Release**:
-   - Go to the repository on GitHub
-   - Click "Releases" → "Create a new release"
-   - Select the tag you just pushed
-   - Add release notes
-   - Click "Publish release"
-
-4. **Automated Publishing**:
-   - GitHub Actions will automatically build and publish to npm
-   - Monitor the workflow at: Actions tab in your repository
-
-### Prerequisites for Publishing
-
-Before the CI can publish, you need to set up an npm token:
-
-1. Generate an npm automation token:
-   - Go to https://www.npmjs.com/settings/YOUR_USERNAME/tokens
-   - Click "Generate New Token" → "Automation"
-   - Copy the token
-
-2. Add it to GitHub Secrets:
-   - Go to your repository → Settings → Secrets and variables → Actions
-   - Click "New repository secret"
-   - Name: `NPM_TOKEN`
-   - Value: Your npm token
-   - Click "Add secret"
-
-### CI/CD Workflows
-
-- **CI** (`ci.yml`): Runs on every push/PR to main, builds and tests on Node 18 & 20
-- **Publish** (`publish.yml`): Runs on GitHub releases, builds and publishes to npm
-
-## License
-
-ISC
-
-## Support
-
-- Issues: https://github.com/Kosuke-Org/kosuke-cli/issues
-- Homepage: https://github.com/Kosuke-Org/kosuke-cli
-
-## Author
-
-filippo.pedrazzini@kosuke.ai
