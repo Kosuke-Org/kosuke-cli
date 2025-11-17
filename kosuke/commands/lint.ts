@@ -17,8 +17,9 @@ interface LintFixResult {
 
 /**
  * Run Claude-powered lint fixing
+ * Exported so other commands can use it
  */
-async function fixLintErrors(lintErrors: string): Promise<boolean> {
+export async function fixLintErrors(lintErrors: string): Promise<boolean> {
   console.log('\n🤖 Using Claude to fix linting errors...\n');
 
   const workspaceRoot = process.cwd();
@@ -28,7 +29,10 @@ async function fixLintErrors(lintErrors: string): Promise<boolean> {
 
 Your task is to analyze linting errors and fix them according to the project's linting rules.
 
-IMPORTANT: Focus ONLY on fixing the specific linting errors provided. Do not make unnecessary changes.`;
+CRITICAL REQUIREMENTS:
+- You MUST use the search_replace or write tools to fix ALL linting errors
+- Simply identifying issues without fixing them is NOT acceptable
+- Focus ONLY on fixing the specific linting errors provided. Do not make unnecessary changes.`;
 
   // User prompt
   const promptText = `The following linting errors need to be fixed:
@@ -40,9 +44,13 @@ ${lintErrors}
 **Your task:**
 1. Analyze each linting error carefully
 2. Read the files that have errors
-3. Fix each error according to the linting rules
+3. **IMMEDIATELY FIX each error using search_replace or write tools**
 4. Make minimal changes - only fix what's broken
 5. Ensure your fixes don't introduce new issues
+
+**IMPORTANT:**
+- Don't just describe errors - FIX them!
+- Every error you identify MUST be fixed
 
 Start by reading the files with errors and fixing them one by one.`;
 
@@ -95,6 +103,7 @@ Start by reading the files with errors and fixing them one by one.`;
 
 /**
  * Core lint fixing logic (git-agnostic)
+ * Used internally by lintCommand
  */
 async function fixLintErrorsCore(): Promise<LintFixResult> {
   console.log('🔍 Running linter...\n');

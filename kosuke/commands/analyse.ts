@@ -15,6 +15,7 @@ import { discoverFiles } from '../utils/file-discovery.js';
 import { createBatches } from '../utils/batch-creator.js';
 import { runLint, runTypecheck } from '../utils/validator.js';
 import { runWithPRBatched } from '../utils/pr-orchestrator.js';
+import { fixLintErrors } from './lint.js';
 import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
 interface BatchResult {
@@ -76,16 +77,19 @@ async function analyzeBatch(batch: Batch, _claudeMdRules: string): Promise<Batch
   const workspaceRoot = process.cwd();
 
   // System prompt: Just point to CLAUDE.md
-  const systemPrompt = `You are a code quality analyzer for this repository.
+  const systemPrompt = `You are a code quality analyzer and fixer for this repository.
 
-Your task is to analyze specific files for code quality issues and fix them according to the rules in CLAUDE.md.
+Your task is to analyze specific files for code quality issues and IMMEDIATELY FIX them according to the rules in CLAUDE.md.
 
-IMPORTANT: You will ONLY be given access to a specific batch of files. Do NOT explore the entire repository.
+CRITICAL REQUIREMENTS:
+- You MUST use the search_replace or write tools to fix ALL violations you find
+- Simply identifying issues without fixing them is NOT acceptable
+- You will ONLY be given access to a specific batch of files. Do NOT explore the entire repository.
 
 The rules you must follow are provided in CLAUDE.md.`;
 
   // User prompt: Simple and direct
-  const promptText = `Analyze these ${batch.files.length} files for code quality issues:
+  const promptText = `Analyze and FIX code quality issues in these ${batch.files.length} files:
 
 ${batch.files.map((f) => `- ${f}`).join('\n')}
 
@@ -93,12 +97,18 @@ ${batch.files.map((f) => `- ${f}`).join('\n')}
 1. Read CLAUDE.md to understand all the rules and best practices
 2. Read ONLY the files listed above (these are the files in this batch)
 3. Check each file against the CLAUDE.md rules
-4. Fix any violations you find
+4. **IMMEDIATELY FIX any violations you find using search_replace or write tools**
 5. Do NOT explore or modify other files outside this batch
+
+**IMPORTANT:** 
+- Don't just describe issues - FIX them!
+- Use search_replace for targeted fixes
+- Use write for complete file rewrites if needed
+- Every violation you identify MUST be fixed
 
 **Rules reference:** ${join(workspaceRoot, 'CLAUDE.md')}
 
-Start by reading CLAUDE.md, then analyze the batch files.`;
+Start by reading CLAUDE.md, then analyze and fix the batch files.`;
 
   const options: Options = {
     model: 'claude-sonnet-4-5',
@@ -194,14 +204,38 @@ Start by reading CLAUDE.md, then analyze the batch files.`;
 
 /**
  * Validate fixes with lint and typecheck
+ * If lint fails, use Claude to fix the errors automatically
  */
 async function validateBatch(): Promise<boolean> {
   console.log(`   🔧 Running validation...`);
 
-  const lintResult = await runLint();
+  let lintResult = await runLint();
   if (!lintResult.success) {
-    console.error(`   ❌ Linting failed:\n${lintResult.error}`);
-    return false;
+    console.log(`   ⚠️  Linting errors detected, attempting to fix...`);
+
+    // Try to fix lint errors with Claude (max 2 attempts)
+    let attempts = 0;
+    const maxAttempts = 2;
+
+    while (!lintResult.success && attempts < maxAttempts) {
+      attempts++;
+      console.log(`\n   🔄 Lint fix attempt ${attempts}/${maxAttempts}`);
+
+      const fixApplied = await fixLintErrors(lintResult.error || '');
+
+      if (!fixApplied) {
+        console.log(`   ⚠️  No fixes were applied by Claude`);
+        break;
+      }
+
+      // Re-run lint to check if errors are fixed
+      lintResult = await runLint();
+    }
+
+    if (!lintResult.success) {
+      console.error(`   ❌ Linting failed after ${attempts} attempts:\n${lintResult.error}`);
+      return false;
+    }
   }
   console.log(`   ✅ Lint passed`);
 

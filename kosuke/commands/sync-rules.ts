@@ -9,6 +9,7 @@ import { join, dirname } from 'path';
 import { isKosukeTemplateRepo } from '../utils/git.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
 import { runFormat, runLint } from '../utils/validator.js';
+import { fixLintErrors } from './lint.js';
 import type { RulesAdaptation, SyncRulesOptions } from '../types.js';
 
 // Constants
@@ -321,10 +322,41 @@ async function syncRulesCore(force: boolean): Promise<SyncResult> {
   // Run formatting and linting
   console.log('\n🔧 Running formatting and linting...');
 
-  await runFormat();
+  const formatResult = await runFormat();
+  if (!formatResult.success) {
+    console.error('   ❌ Formatting failed:\n', formatResult.error);
+    throw new Error('Formatting validation failed');
+  }
   console.log('   ✅ Formatting completed');
 
-  await runLint();
+  let lintResult = await runLint();
+  if (!lintResult.success) {
+    console.log('   ⚠️  Linting errors detected, attempting to fix...');
+
+    // Try to fix lint errors with Claude (max 2 attempts)
+    let attempts = 0;
+    const maxAttempts = 2;
+
+    while (!lintResult.success && attempts < maxAttempts) {
+      attempts++;
+      console.log(`\n   🔄 Lint fix attempt ${attempts}/${maxAttempts}`);
+
+      const fixApplied = await fixLintErrors(lintResult.error || '');
+
+      if (!fixApplied) {
+        console.log(`   ⚠️  No fixes were applied by Claude`);
+        break;
+      }
+
+      // Re-run lint to check if errors are fixed
+      lintResult = await runLint();
+    }
+
+    if (!lintResult.success) {
+      console.error('   ❌ Linting failed after attempts:\n', lintResult.error);
+      throw new Error('Linting validation failed');
+    }
+  }
   console.log('   ✅ Linting completed');
 
   return {
