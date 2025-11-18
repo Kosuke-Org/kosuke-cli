@@ -38,6 +38,9 @@ export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 export { requirementsCommand } from './kosuke/commands/requirements.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
+export { shipCommand, shipCore } from './kosuke/commands/ship.js';
+export { buildCommand } from './kosuke/commands/build.js';
+export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
 
 // Re-export utilities
 export { discoverFiles } from './kosuke/utils/file-discovery.js';
@@ -46,6 +49,8 @@ export {
   runLint,
   runTypecheck,
   runFormat,
+  runTests,
+  runComprehensiveLinting,
   detectPackageManager,
   readPackageJsonScripts,
 } from './kosuke/utils/validator.js';
@@ -65,6 +70,12 @@ export type {
   CodeExplorationResult,
   TicketsOptions,
   TicketsResult,
+  Ticket,
+  ShipOptions,
+  ShipResult,
+  BuildOptions,
+  ReviewOptions,
+  ReviewResult,
 } from './kosuke/types.js';
 
 export type { ValidationResult } from './kosuke/utils/validator.js';

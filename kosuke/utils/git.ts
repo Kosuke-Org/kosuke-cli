@@ -122,3 +122,47 @@ export async function getCurrentBranch(): Promise<string> {
   const branch = await git.revparse(['--abbrev-ref', 'HEAD']);
   return branch.trim();
 }
+
+/**
+ * Commit and push to current branch (no branch creation, no PR)
+ */
+export async function commitAndPushCurrentBranch(message: string): Promise<void> {
+  await ensureGitIdentity();
+
+  // Check if there are changes to commit
+  const status = await git.status();
+  if (status.files.length === 0) {
+    console.log('ℹ️  No changes to commit');
+    return;
+  }
+
+  // Commit changes
+  await git.add(['-A']);
+  await git.commit(message, ['--no-verify']);
+
+  // Push to current branch
+  const currentBranch = await getCurrentBranch();
+  await git.push('origin', currentBranch);
+}
+
+/**
+ * Get git diff of current changes (staged and unstaged)
+ */
+export async function getGitDiff(): Promise<string> {
+  try {
+    // Get diff of both staged and unstaged changes
+    const diff = await git.diff(['HEAD']);
+    return diff;
+  } catch (error) {
+    console.warn('⚠️  Could not get git diff:', error);
+    return '';
+  }
+}
+
+/**
+ * Check if there are any uncommitted changes
+ */
+export async function hasUncommittedChanges(): Promise<boolean> {
+  const status = await git.status();
+  return status.files.length > 0;
+}

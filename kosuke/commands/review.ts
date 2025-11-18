@@ -1,0 +1,217 @@
+/**
+ * Review command - Review git diff against CLAUDE.md rules
+ *
+ * This command reviews only the current git diff (uncommitted changes)
+ * for compliance with CLAUDE.md rules, fixes any issues found,
+ * and runs comprehensive linting afterwards.
+ * Note: This command does NOT support --pr flag (changes applied locally only).
+ *
+ * Usage:
+ *   kosuke review                          # Review current git diff
+ */
+
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
+import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
+import { runComprehensiveLinting } from '../utils/validator.js';
+import type { ReviewOptions, ReviewResult } from '../types.js';
+
+/**
+ * Load CLAUDE.md rules
+ */
+function loadClaudeRules(cwd: string = process.cwd()): string {
+  const claudePath = join(cwd, 'CLAUDE.md');
+
+  if (!existsSync(claudePath)) {
+    throw new Error(
+      `CLAUDE.md not found in workspace root.\n` +
+        `Please ensure CLAUDE.md exists at: ${claudePath}`
+    );
+  }
+
+  return readFileSync(claudePath, 'utf-8');
+}
+
+/**
+ * Build system prompt for code review (git diff only)
+ */
+function buildReviewSystemPrompt(claudeRules: string, gitDiff: string): string {
+  return `You are a senior code reviewer conducting a code quality review of recent changes.
+
+**Your Task:**
+Review the git diff below for compliance with the project's CLAUDE.md rules and best practices.
+
+**Project Rules (CLAUDE.md):**
+${claudeRules}
+
+**Git Diff to Review:**
+\`\`\`diff
+${gitDiff}
+\`\`\`
+
+**Review Scope:**
+1. **Code Quality**: Check for violations of CLAUDE.md guidelines
+2. **Type Safety**: Ensure proper TypeScript usage
+3. **Best Practices**: Verify coding patterns and conventions
+4. **Error Handling**: Ensure proper error handling
+5. **Documentation**: Check for adequate comments and docs
+6. **Security**: Identify potential security issues
+7. **Performance**: Look for obvious performance issues
+
+**Critical Instructions:**
+- Focus ONLY on the files and changes shown in the git diff above
+- Identify ALL violations of CLAUDE.md rules in the changed code
+- For EACH issue found, FIX it immediately using search_replace or write tools
+- Don't just report issues - FIX them!
+- Make minimal necessary changes
+- Ensure fixes don't break functionality
+- If you need to see more context from a file, use the read_file tool
+
+**What to Look For in the Changes:**
+- Use of \`any\` type (should be avoided)
+- Missing error handling
+- Inconsistent naming conventions
+- Poor code organization
+- Missing JSDoc comments on exported functions
+- Improper use of dependencies
+- Code duplication
+- Overly complex functions
+- Missing type exports
+
+Review the changes shown in the diff and fix any issues you find.`;
+}
+
+/**
+ * Core review logic - reviews git diff only
+ */
+export async function reviewCore(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  options: ReviewOptions = {}
+): Promise<ReviewResult> {
+  const cwd = process.cwd();
+
+  // 1. Check for uncommitted changes
+  console.log('🔍 Checking for uncommitted changes...');
+  const hasChanges = await hasUncommittedChanges();
+
+  if (!hasChanges) {
+    console.log('   ℹ️  No uncommitted changes found. Nothing to review.\n');
+    return {
+      success: true,
+      issuesFound: 0,
+      fixesApplied: 0,
+      tokensUsed: {
+        input: 0,
+        output: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+      },
+      cost: 0,
+    };
+  }
+
+  console.log('   ✅ Found uncommitted changes\n');
+
+  // 2. Get git diff
+  console.log('📝 Getting git diff...');
+  const gitDiff = await getGitDiff();
+
+  if (!gitDiff || gitDiff.trim().length === 0) {
+    console.log('   ℹ️  No diff available. Nothing to review.\n');
+    return {
+      success: true,
+      issuesFound: 0,
+      fixesApplied: 0,
+      tokensUsed: {
+        input: 0,
+        output: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+      },
+      cost: 0,
+    };
+  }
+
+  console.log(`   ✅ Got diff (${gitDiff.length} characters)\n`);
+
+  // 3. Load CLAUDE.md rules
+  console.log('📖 Loading CLAUDE.md rules...');
+  const claudeRules = loadClaudeRules(cwd);
+  console.log(`   ✅ Loaded rules (${claudeRules.length} characters)\n`);
+
+  // 4. Review phase
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🔍 Phase 1: Code Review of Git Diff`);
+  console.log(`${'='.repeat(60)}\n`);
+
+  const systemPrompt = buildReviewSystemPrompt(claudeRules, gitDiff);
+
+  const reviewResult = await runAgent(
+    'Review the git diff for compliance with CLAUDE.md rules and fix all issues found',
+    {
+      systemPrompt,
+      cwd,
+      maxTurns: 30,
+      verbosity: 'normal',
+    }
+  );
+
+  const issuesFound = reviewResult.fixCount;
+
+  console.log(`\n✨ Review completed`);
+  console.log(`   🔍 Issues found and fixed: ${issuesFound}`);
+  console.log(`   💰 Review cost: ${formatCostBreakdown(reviewResult)}`);
+
+  // 5. Linting phase
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🔧 Phase 2: Linting & Quality Checks`);
+  console.log(`${'='.repeat(60)}\n`);
+
+  const lintResult = await runComprehensiveLinting();
+  console.log(`\n✅ Linting completed (${lintResult.fixCount} additional fixes applied)`);
+
+  return {
+    success: true,
+    issuesFound,
+    fixesApplied: issuesFound + lintResult.fixCount,
+    tokensUsed: reviewResult.tokensUsed,
+    cost: reviewResult.cost,
+  };
+}
+
+/**
+ * Main review command
+ */
+export async function reviewCommand(options: ReviewOptions = {}): Promise<void> {
+  console.log('🔍 Starting Code Review (Git Diff)...\n');
+
+  try {
+    // Validate environment
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY environment variable is required');
+    }
+
+    // Execute core logic (no PR support for review command)
+    const result = await reviewCore(options);
+
+    if (result.issuesFound === 0 && result.fixesApplied === 0) {
+      console.log('\n✅ Review completed - no issues found!');
+      return;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 Review Summary');
+    console.log('='.repeat(60));
+    console.log(`🔍 Issues found: ${result.issuesFound}`);
+    console.log(`🔧 Total fixes applied: ${result.fixesApplied}`);
+    console.log(`💰 Total cost: $${result.cost.toFixed(4)}`);
+    console.log('='.repeat(60));
+
+    console.log('\n✅ Review completed successfully!');
+    console.log('ℹ️  All changes applied locally.');
+  } catch (error) {
+    console.error('\n❌ Review failed:', error);
+    throw error;
+  }
+}

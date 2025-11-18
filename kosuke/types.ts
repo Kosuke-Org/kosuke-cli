@@ -92,7 +92,8 @@ export interface Ticket {
   title: string;
   description: string;
   estimatedEffort: number; // 1-10
-  status: 'Todo' | 'Done';
+  status: 'Todo' | 'InProgress' | 'Done' | 'Error';
+  error?: string; // Optional error message if status is 'Error'
 }
 
 export interface TicketsResult {
@@ -100,6 +101,56 @@ export interface TicketsResult {
   backendTickets: Ticket[];
   frontendTickets: Ticket[];
   totalTickets: number;
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreation: number;
+    cacheRead: number;
+  };
+  cost: number;
+}
+
+export interface ShipOptions {
+  ticket: string; // Ticket ID (e.g., "SCHEMA-1")
+  review?: boolean; // Enable review step
+  commit?: boolean; // Commit and push to current branch
+  pr?: boolean; // Create pull request (new branch)
+  baseBranch?: string; // Base branch for PR
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+}
+
+export interface BuildOptions {
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface ReviewOptions {
+  // No options for now - reviews current git diff
+}
+
+export interface ShipResult {
+  ticketId: string;
+  success: boolean;
+  implementationFixCount: number;
+  lintFixCount: number;
+  reviewPerformed: boolean;
+  reviewFixCount: number;
+  gitDiffReviewed: boolean;
+  gitDiffReviewFixCount: number;
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreation: number;
+    cacheRead: number;
+  };
+  cost: number;
+  error?: string;
+}
+
+export interface ReviewResult {
+  success: boolean;
+  issuesFound: number;
+  fixesApplied: number;
   tokensUsed: {
     input: number;
     output: number;

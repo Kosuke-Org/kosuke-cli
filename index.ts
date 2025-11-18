@@ -4,12 +4,15 @@
  * Kosuke CLI - Development Automation Tool
  *
  * Commands:
- *   sync-rules [--force]  Sync rules from kosuke-template
- *   analyse               Analyze and fix code quality issues
- *   lint                  Fix linting errors with Claude AI
- *   requirements          Interactive requirements gathering
- *   getcode               Explore GitHub repositories and fetch code
- *   tickets               Generate implementation tickets from requirements
+ *   sync-rules [--force]    Sync rules from kosuke-template
+ *   analyse                 Analyze and fix code quality issues
+ *   lint                    Fix linting errors with Claude AI
+ *   requirements            Interactive requirements gathering
+ *   getcode                 Explore GitHub repositories and fetch code
+ *   tickets                 Generate implementation tickets from requirements
+ *   ship --ticket=<ID>      Implement a single ticket from tickets.json
+ *   build                   Batch process all tickets from tickets.json
+ *   review                  Review codebase against CLAUDE.md rules
  *
  * Usage:
  *   bun run kosuke sync-rules
@@ -18,6 +21,9 @@
  *   bun run kosuke requirements
  *   bun run kosuke getcode "query"
  *   bun run kosuke tickets
+ *   bun run kosuke ship --ticket=SCHEMA-1
+ *   bun run kosuke build
+ *   bun run kosuke review
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -31,6 +37,9 @@ import { lintCommand } from './kosuke/commands/lint.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
 import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
 import { ticketsCommand } from './kosuke/commands/tickets.js';
+import { shipCommand } from './kosuke/commands/ship.js';
+import { buildCommand } from './kosuke/commands/build.js';
+import { reviewCommand } from './kosuke/commands/review.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -94,6 +103,45 @@ async function main() {
           template: args.find((arg) => arg.startsWith('--template='))?.split('=')[1],
         };
         await ticketsCommand(options);
+        break;
+      }
+
+      case 'ship': {
+        const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
+        if (!ticketArg) {
+          console.error('❌ --ticket flag is required\n');
+          console.log('Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--commit | --pr]');
+          console.log('\nExamples:');
+          console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
+          console.log('  kosuke ship --ticket=BACKEND-2 --review      # With review');
+          console.log('  kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch');
+          console.log('  kosuke ship --ticket=BACKEND-3 --pr          # Create PR (new branch)');
+          process.exit(1);
+        }
+
+        const options = {
+          ticket: ticketArg,
+          review: args.includes('--review'),
+          commit: args.includes('--commit'),
+          pr: args.includes('--pr'),
+          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+          ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+        };
+        await shipCommand(options);
+        break;
+      }
+
+      case 'build': {
+        const options = {
+          ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+        };
+        await buildCommand(options);
+        break;
+      }
+
+      case 'review': {
+        const options = {};
+        await reviewCommand(options);
         break;
       }
 
@@ -197,6 +245,50 @@ COMMANDS:
       kosuke tickets                          # Use docs.md
       kosuke tickets --path=requirements.md   # Custom requirements file
       kosuke tickets --output=my-tickets.json # Custom output file
+
+  ship --ticket=<ID> [options]
+    Implement a single ticket from tickets.json
+    Follows CLAUDE.md rules, runs linting, and optionally performs review
+    
+    Options:
+      --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
+      --review              Perform code review step after implementation
+      --commit              Commit and push to current branch
+      --pr                  Create new branch and pull request (mutually exclusive with --commit)
+      --base-branch=<name>  Base branch for PR (default: current branch)
+      --tickets=<file>      Path to tickets file (default: tickets.json)
+    
+    Examples:
+      kosuke ship --ticket=SCHEMA-1                # Implement locally only
+      kosuke ship --ticket=BACKEND-2 --review      # Implement with review
+      kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch
+      kosuke ship --ticket=BACKEND-3 --pr          # Create new branch + PR
+      kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
+
+  build [options]
+    Batch process all "Todo" and "Error" tickets from tickets.json
+    Automatically commits each ticket to current branch
+    Processes tickets in order: Schema → Backend → Frontend
+    
+    Options:
+      --tickets=<file>      Path to tickets file (default: tickets.json)
+    
+    Examples:
+      git checkout -b feat/implement-tickets  # Create feature branch first
+      kosuke build                            # Process and commit all tickets
+      gh pr create                            # Create PR manually
+      
+      kosuke build --tickets=custom.json      # Use custom tickets file
+    
+    Note: If a ticket fails, fix the issue and run build again to resume
+
+  review
+    Review current git diff against CLAUDE.md rules
+    Identifies and fixes compliance issues in uncommitted changes
+    Note: Changes applied locally only (no --pr support)
+    
+    Examples:
+      kosuke review                           # Review uncommitted changes
 
 WORKFLOW:
 

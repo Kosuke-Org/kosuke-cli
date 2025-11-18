@@ -177,3 +177,129 @@ export async function runTypecheck(): Promise<ValidationResult> {
     };
   }
 }
+
+/**
+ * Run tests using package.json test script
+ */
+export async function runTests(): Promise<ValidationResult> {
+  const cwd = process.cwd();
+  const scripts = readPackageJsonScripts(cwd);
+
+  if (!scripts || !scripts.test) {
+    return {
+      success: true,
+      warning: '⚠️  No test script found in package.json. Skipping tests.',
+    };
+  }
+
+  const packageManager = detectPackageManager(cwd);
+  const command = `${packageManager} run test`;
+
+  try {
+    const output = execSync(command, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return { success: true, output };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    return {
+      success: false,
+      error: `$ ${command}\n\n${err.stdout || err.stderr || err.message}`,
+    };
+  }
+}
+
+interface ValidationStep {
+  name: string;
+  run: () => Promise<ValidationResult>;
+}
+
+/**
+ * Run comprehensive linting and fixing
+ */
+export async function runComprehensiveLinting(): Promise<{ success: boolean; fixCount: number }> {
+  console.log('\n🔍 Running comprehensive code quality checks...\n');
+
+  const validationSteps: ValidationStep[] = [
+    { name: '🎨 Format', run: runFormat },
+    { name: '🔍 Lint', run: runLint },
+    { name: '🔎 TypeCheck', run: runTypecheck },
+    { name: '🧪 Tests', run: runTests },
+  ];
+
+  let totalFixCount = 0;
+
+  // Run each validation step
+  for (const step of validationSteps) {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`Running: ${step.name}`);
+    console.log(`${'='.repeat(60)}\n`);
+
+    let result = await step.run();
+
+    // Handle warnings (non-blocking)
+    if (result.warning) {
+      console.log(result.warning);
+      console.log(`✅ ${step.name} - SKIPPED\n`);
+      continue;
+    }
+
+    // Handle success
+    if (result.success) {
+      console.log(`✅ ${step.name} - PASSED\n`);
+      continue;
+    }
+
+    // Handle errors - attempt to fix
+    console.log(`❌ ${step.name} - FAILED:\n`);
+    console.log(result.error);
+
+    // Attempt to fix errors with Claude (max 3 attempts per step)
+    let attemptCount = 0;
+    const maxAttempts = 3;
+
+    while (!result.success && attemptCount < maxAttempts) {
+      attemptCount++;
+
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🔄 ${step.name} Fix Attempt ${attemptCount}/${maxAttempts}`);
+      console.log(`${'='.repeat(60)}`);
+
+      const { fixCodeQualityErrors } = await import('../commands/lint.js');
+      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '');
+
+      if (!fixApplied) {
+        console.log(`\n⚠️  No fixes were applied by Claude for ${step.name}`);
+        break;
+      }
+
+      totalFixCount++;
+
+      // Verify fixes by running validation again
+      console.log(`\n🔍 Verifying ${step.name} fixes...\n`);
+      result = await step.run();
+
+      if (result.success) {
+        console.log(`✅ ${step.name} - All errors fixed!\n`);
+        break;
+      } else {
+        const errorLines = result.error?.split('\n').length || 0;
+        console.log(`\n⚠️  Some ${step.name} errors remain (${errorLines} lines):`);
+        console.log(result.error);
+      }
+    }
+
+    // Check if step still has errors after attempts
+    if (!result.success) {
+      throw new Error(`${step.name} errors remain after ${maxAttempts} attempts. Cannot proceed.`);
+    }
+  }
+
+  console.log('\n' + '='.repeat(60));
+  console.log('✅ All validation steps passed!');
+  console.log('='.repeat(60));
+
+  return { success: true, fixCount: totalFixCount };
+}
