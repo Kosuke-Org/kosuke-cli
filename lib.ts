@@ -33,7 +33,7 @@
 
 // Re-export commands
 export { analyseCommand } from './kosuke/commands/analyse.js';
-export { lintCommand } from './kosuke/commands/lint.js';
+export { lintCommand, fixCodeQualityErrors, fixLintErrors } from './kosuke/commands/lint.js';
 export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 export { requirementsCommand } from './kosuke/commands/requirements.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';

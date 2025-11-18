@@ -1,48 +1,133 @@
 /**
- * Lint command - Use Claude to fix linting errors
+ * Lint command - Comprehensive code quality validation and fixing
  *
- * Strategy: Run linter, give errors to Claude, let it fix them
+ * Strategy: Run all validation steps (format, lint, typecheck, test, knip),
+ * give errors to Claude, let it fix them
  */
 
-import { runLint } from '../utils/validator.js';
+import { runLint, runFormat, runTypecheck } from '../utils/validator.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
 import { runAgent } from '../utils/claude-agent.js';
+import { execSync } from 'child_process';
 import type { LintOptions } from '../types.js';
+
+interface ValidationStep {
+  name: string;
+  run: () => Promise<{ success: boolean; error?: string; warning?: string; output?: string }>;
+  fixable: boolean; // Can Claude attempt to fix this?
+}
 
 interface LintFixResult {
   success: boolean;
   attempts: number;
   fixesApplied: number;
+  stepsFixed: string[];
 }
 
 /**
- * Run Claude-powered lint fixing
+ * Run tests using package.json test script
+ */
+async function runTests(): Promise<{
+  success: boolean;
+  error?: string;
+  warning?: string;
+  output?: string;
+}> {
+  const { readPackageJsonScripts, detectPackageManager } = await import('../utils/validator.js');
+
+  const scripts = readPackageJsonScripts();
+  if (!scripts || !scripts.test) {
+    return {
+      success: true,
+      warning: '⚠️  No test script found in package.json. Skipping tests.',
+    };
+  }
+
+  const packageManager = detectPackageManager();
+  const command = `${packageManager} run test`;
+
+  try {
+    const output = execSync(command, {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return { success: true, output };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    return {
+      success: false,
+      error: `$ ${command}\n\n${err.stdout || err.stderr || err.message}`,
+    };
+  }
+}
+
+/**
+ * Run knip to check for unused exports
+ */
+async function runKnip(): Promise<{
+  success: boolean;
+  error?: string;
+  warning?: string;
+  output?: string;
+}> {
+  const { readPackageJsonScripts, detectPackageManager } = await import('../utils/validator.js');
+
+  const scripts = readPackageJsonScripts();
+  if (!scripts || !scripts.knip) {
+    return {
+      success: true,
+      warning: '⚠️  No knip script found in package.json. Skipping knip check.',
+    };
+  }
+
+  const packageManager = detectPackageManager();
+  const command = `${packageManager} run knip`;
+
+  try {
+    const output = execSync(command, {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return { success: true, output };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    return {
+      success: false,
+      error: `$ ${command}\n\n${err.stdout || err.stderr || err.message}`,
+    };
+  }
+}
+
+/**
+ * Run Claude to fix code quality errors
  * Exported so other commands can use it
  */
-export async function fixLintErrors(lintErrors: string): Promise<boolean> {
-  console.log('\n🤖 Using Claude to fix linting errors...\n');
+export async function fixCodeQualityErrors(stepName: string, errors: string): Promise<boolean> {
+  console.log(`\n🤖 Using Claude to fix ${stepName} errors...\n`);
 
   const workspaceRoot = process.cwd();
 
   // System prompt
-  const systemPrompt = `You are a code quality expert specialized in fixing linting errors.
+  const systemPrompt = `You are a code quality expert specialized in fixing ${stepName} errors.
 
-Your task is to analyze linting errors and fix them according to the project's linting rules.
+Your task is to analyze errors and fix them according to the project's quality standards.
 
 CRITICAL REQUIREMENTS:
-- You MUST use the search_replace or write tools to fix ALL linting errors
+- You MUST use the search_replace or write tools to fix ALL errors
 - Simply identifying issues without fixing them is NOT acceptable
-- Focus ONLY on fixing the specific linting errors provided. Do not make unnecessary changes.`;
+- Focus ONLY on fixing the specific errors provided. Do not make unnecessary changes.`;
 
   // User prompt
-  const promptText = `The following linting errors need to be fixed:
+  const promptText = `The following ${stepName} errors need to be fixed:
 
 \`\`\`
-${lintErrors}
+${errors}
 \`\`\`
 
 **Your task:**
-1. Analyze each linting error carefully
+1. Analyze each error carefully
 2. Read the files that have errors
 3. **IMMEDIATELY FIX each error using search_replace or write tools**
 4. Make minimal changes - only fix what's broken
@@ -71,74 +156,124 @@ Start by reading the files with errors and fixing them one by one.`;
 }
 
 /**
- * Core lint fixing logic (git-agnostic)
+ * Legacy export for backward compatibility
+ */
+export async function fixLintErrors(lintErrors: string): Promise<boolean> {
+  return fixCodeQualityErrors('linting', lintErrors);
+}
+
+/**
+ * Core comprehensive validation and fixing logic (git-agnostic)
  * Used internally by lintCommand
  */
 async function fixLintErrorsCore(): Promise<LintFixResult> {
-  console.log('🔍 Running linter...\n');
-  let lintResult = await runLint();
+  console.log('🔍 Running comprehensive code quality checks...\n');
 
-  if (lintResult.success) {
-    console.log('✅ No linting errors found! Code is clean.\n');
-    return { success: true, attempts: 0, fixesApplied: 0 };
-  }
+  // Define all validation steps
+  const validationSteps: ValidationStep[] = [
+    { name: '🎨 Format', run: runFormat, fixable: true },
+    { name: '🔍 Lint', run: runLint, fixable: true },
+    { name: '🔎 TypeCheck', run: runTypecheck, fixable: true },
+    { name: '🧪 Tests', run: runTests, fixable: true },
+    { name: '🔪 Knip', run: runKnip, fixable: true },
+  ];
 
-  console.log('❌ Linting errors found:\n');
-  console.log(lintResult.error);
-
-  // Use Claude to fix errors (up to 3 attempts)
-  let attemptCount = 0;
-  const maxAttempts = 3;
+  const stepsFixed: string[] = [];
+  let totalAttempts = 0;
   let totalFixes = 0;
 
-  while (!lintResult.success && attemptCount < maxAttempts) {
-    attemptCount++;
+  // Run each validation step
+  for (const step of validationSteps) {
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🔄 Fix Attempt ${attemptCount}/${maxAttempts}`);
-    console.log(`${'='.repeat(60)}`);
+    console.log(`Running: ${step.name}`);
+    console.log(`${'='.repeat(60)}\n`);
 
-    const fixApplied = await fixLintErrors(lintResult.error || '');
+    let result = await step.run();
 
-    if (!fixApplied) {
-      console.log('\n⚠️  No fixes were applied by Claude');
-      break;
+    // Handle warnings (non-blocking)
+    if (result.warning) {
+      console.log(result.warning);
+      console.log(`✅ ${step.name} - SKIPPED\n`);
+      continue;
     }
 
-    totalFixes++;
+    // Handle success
+    if (result.success) {
+      console.log(`✅ ${step.name} - PASSED\n`);
+      continue;
+    }
 
-    // Verify fixes by running lint again
-    console.log('\n🔍 Verifying fixes...\n');
-    lintResult = await runLint();
+    // Handle errors
+    console.log(`❌ ${step.name} - FAILED:\n`);
+    console.log(result.error);
 
-    if (lintResult.success) {
-      console.log('✅ All linting errors fixed!\n');
-      break;
-    } else {
-      console.log(`\n⚠️  Some errors remain (${lintResult.error?.split('\n').length || 0} lines):`);
-      console.log(lintResult.error);
+    if (!step.fixable) {
+      console.log(`\n⚠️  ${step.name} errors cannot be auto-fixed by Claude`);
+      throw new Error(`${step.name} validation failed`);
+    }
+
+    // Attempt to fix errors with Claude (max 3 attempts per step)
+    let attemptCount = 0;
+    const maxAttempts = 3;
+
+    while (!result.success && attemptCount < maxAttempts) {
+      attemptCount++;
+      totalAttempts++;
+
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🔄 ${step.name} Fix Attempt ${attemptCount}/${maxAttempts}`);
+      console.log(`${'='.repeat(60)}`);
+
+      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '');
+
+      if (!fixApplied) {
+        console.log(`\n⚠️  No fixes were applied by Claude for ${step.name}`);
+        break;
+      }
+
+      totalFixes++;
+
+      // Verify fixes by running validation again
+      console.log(`\n🔍 Verifying ${step.name} fixes...\n`);
+      result = await step.run();
+
+      if (result.success) {
+        console.log(`✅ ${step.name} - All errors fixed!\n`);
+        stepsFixed.push(step.name);
+        break;
+      } else {
+        const errorLines = result.error?.split('\n').length || 0;
+        console.log(`\n⚠️  Some ${step.name} errors remain (${errorLines} lines):`);
+        console.log(result.error);
+      }
+    }
+
+    // Check if step still has errors after attempts
+    if (!result.success) {
+      console.error(`\n❌ Could not fix all ${step.name} errors after ${maxAttempts} attempts`);
+      console.log('\nRemaining errors:');
+      console.log(result.error);
+      throw new Error(`${step.name} errors remain after maximum attempts`);
     }
   }
 
-  // Check final result
-  if (!lintResult.success) {
-    console.error('\n❌ Could not fix all linting errors after 3 attempts');
-    console.log('\nRemaining errors:');
-    console.log(lintResult.error);
-    throw new Error('Linting errors remain after maximum attempts');
-  }
+  console.log('\n' + '='.repeat(60));
+  console.log('✅ All validation steps passed!');
+  console.log('='.repeat(60));
 
   return {
     success: true,
-    attempts: attemptCount,
+    attempts: totalAttempts,
     fixesApplied: totalFixes,
+    stepsFixed,
   };
 }
 
 /**
- * Main lint command
+ * Main lint command (now runs comprehensive validation)
  */
 export async function lintCommand(options: LintOptions = {}): Promise<void> {
-  console.log('🚀 Starting Kosuke Lint Fix...\n');
+  console.log('🚀 Starting Kosuke Code Quality Check & Fix...\n');
 
   try {
     // Validate environment
@@ -148,21 +283,25 @@ export async function lintCommand(options: LintOptions = {}): Promise<void> {
 
     // If --pr flag is provided, wrap with PR workflow
     if (options.pr) {
-      const { result, prInfo } = await runWithPR(
+      const { result: fixResult, prInfo } = await runWithPR(
         {
-          branchPrefix: 'fix/kosuke-lint',
+          branchPrefix: 'fix/kosuke-quality',
           baseBranch: options.baseBranch,
-          commitMessage: 'chore: fix linting errors',
-          prTitle: 'chore: Fix linting errors',
-          prBody: `## 🔧 Automated Lint Fixes
+          commitMessage: 'chore: fix code quality issues',
+          prTitle: 'chore: Fix code quality issues',
+          prBody: `## 🔧 Automated Code Quality Fixes
 
-This PR contains automated fixes for linting errors.
+This PR contains automated fixes for code quality issues detected by comprehensive validation.
 
-### 📈 Summary
-- **Status**: ✅ All errors fixed
+### 📋 Validation Steps Performed
+- 🎨 **Format**: Code formatting check
+- 🔍 **Lint**: ESLint validation
+- 🔎 **TypeCheck**: TypeScript type checking
+- 🧪 **Tests**: Unit/integration tests
+- 🔪 **Knip**: Unused exports detection
 
-### ✅ Validation
-- Linting: **PASSED**
+### ✅ Result
+All validation steps passed! Code quality issues have been automatically fixed by Claude.
 
 ---
 
@@ -171,21 +310,27 @@ This PR contains automated fixes for linting errors.
         fixLintErrorsCore
       );
 
-      console.log('\n✅ Lint fixing complete!');
-      console.log(`📊 Attempts: ${result.attempts}`);
-      console.log(`🔧 Fixes applied: ${result.fixesApplied}`);
+      console.log('\n✅ Code quality check complete!');
+      console.log(`📊 Attempts: ${fixResult.attempts}`);
+      console.log(`🔧 Fixes applied: ${fixResult.fixesApplied}`);
+      if (fixResult.stepsFixed.length > 0) {
+        console.log(`🎯 Steps fixed: ${fixResult.stepsFixed.join(', ')}`);
+      }
       console.log(`🔗 PR: ${prInfo.prUrl}`);
     } else {
       // Run core logic without PR
       const result = await fixLintErrorsCore();
 
-      console.log('\n✅ Lint fixing complete!');
+      console.log('\n✅ Code quality check complete!');
       console.log(`📊 Attempts: ${result.attempts}`);
       console.log(`🔧 Fixes applied: ${result.fixesApplied}`);
+      if (result.stepsFixed.length > 0) {
+        console.log(`🎯 Steps fixed: ${result.stepsFixed.join(', ')}`);
+      }
       console.log('\nℹ️  Changes applied locally. Use --pr flag to create a pull request.');
     }
   } catch (error) {
-    console.error('\n❌ Lint fixing failed:', error);
+    console.error('\n❌ Code quality check failed:', error);
     throw error;
   }
 }
