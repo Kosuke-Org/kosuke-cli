@@ -1,6 +1,6 @@
 {
   "name": "@kosuke-ai/cli",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "description": "Kosuke CLI - Development automation tool for syncing rules and analyzing code quality",
   "keywords": [
     "CLI",
