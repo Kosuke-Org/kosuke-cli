@@ -13,6 +13,7 @@
  *   ship --ticket=<ID>      Implement a single ticket from tickets.json
  *   build                   Batch process all tickets from tickets.json
  *   review                  Review codebase against CLAUDE.md rules
+ *   test --ticket=<ID>      Run E2E tests with automated fixing
  *
  * Usage:
  *   bun run kosuke sync-rules
@@ -24,6 +25,7 @@
  *   bun run kosuke ship --ticket=SCHEMA-1
  *   bun run kosuke build
  *   bun run kosuke review
+ *   bun run kosuke test --ticket=FRONTEND-1
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -40,6 +42,7 @@ import { ticketsCommand } from './kosuke/commands/tickets.js';
 import { shipCommand } from './kosuke/commands/ship.js';
 import { buildCommand } from './kosuke/commands/build.js';
 import { reviewCommand } from './kosuke/commands/review.js';
+import { testCommand } from './kosuke/commands/test.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -142,6 +145,37 @@ async function main() {
       case 'review': {
         const options = {};
         await reviewCommand(options);
+        break;
+      }
+
+      case 'test': {
+        const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
+        if (!ticketArg) {
+          console.error('❌ --ticket flag is required\n');
+          console.log('Usage: kosuke test --ticket=FRONTEND-1 [--url=URL] [--headed] [--pr]');
+          console.log('\nExamples:');
+          console.log('  kosuke test --ticket=FRONTEND-1                    # Test with auto-fix');
+          console.log('  kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000');
+          console.log('  kosuke test --ticket=FRONTEND-1 --headed           # Show browser');
+          console.log('  kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals');
+          console.log('  kosuke test --ticket=FRONTEND-1 --pr               # Create PR');
+          process.exit(1);
+        }
+
+        const options = {
+          ticket: ticketArg,
+          url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
+          headed: args.includes('--headed'),
+          debug: args.includes('--debug'),
+          updateBaseline: args.includes('--update-baseline'),
+          maxRetries: parseInt(
+            args.find((arg) => arg.startsWith('--max-retries='))?.split('=')[1] || '3'
+          ),
+          ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          pr: args.includes('--pr'),
+          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+        };
+        await testCommand(options);
         break;
       }
 
@@ -289,6 +323,30 @@ COMMANDS:
     
     Examples:
       kosuke review                           # Review uncommitted changes
+
+  test --ticket=<ID> [options]
+    Run E2E tests for a ticket with automated fixing
+    Uses Playwright for testing, Claude AI for analyzing and fixing issues
+    Iteratively tests and fixes until passing or max retries reached
+    
+    Options:
+      --ticket=<ID>         Ticket ID to test (required, e.g., FRONTEND-1)
+      --url=<URL>           Base URL (default: http://localhost:3000)
+      --headed              Show browser during testing
+      --debug               Enable Playwright inspector
+      --update-baseline     Update visual regression baselines
+      --max-retries=<N>     Maximum fix-retest iterations (default: 3)
+      --tickets=<file>      Path to tickets file (default: tickets.json)
+      --pr                  Create pull request with fixes
+      --base-branch=<name>  Base branch for PR (default: current branch)
+    
+    Examples:
+      kosuke test --ticket=FRONTEND-1                    # Test with auto-fix
+      kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
+      kosuke test --ticket=FRONTEND-1 --headed           # Show browser
+      kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals
+      kosuke test --ticket=FRONTEND-1 --max-retries=5    # More attempts
+      kosuke test --ticket=FRONTEND-1 --pr               # Create PR with fixes
 
 WORKFLOW:
 

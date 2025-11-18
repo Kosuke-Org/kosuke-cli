@@ -45,3 +45,11 @@ docs.md
 
 # temporary files
 .tmp
+
+# Playwright / Kosuke test artifacts
+/test-results/
+/playwright-report/
+/.kosuke/tests/*.spec.ts
+/.kosuke/visual-tests/current/
+/.kosuke/visual-tests/diffs/
+playwright.config.ts

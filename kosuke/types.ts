@@ -159,3 +159,44 @@ export interface ReviewResult {
   };
   cost: number;
 }
+
+export interface TestOptions {
+  ticket: string; // Ticket ID to test (required)
+  url?: string; // Base URL (default: http://localhost:3000)
+  headed?: boolean; // Show browser during testing
+  debug?: boolean; // Enable Playwright inspector
+  updateBaseline?: boolean; // Update visual baselines
+  maxRetries?: number; // Max fix-retest iterations (default: 3)
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  pr?: boolean; // Create pull request with fixes
+  baseBranch?: string; // Base branch for PR
+}
+
+export interface TestResult {
+  ticketId: string;
+  success: boolean;
+  testsRun: number;
+  testsPassed: number;
+  testsFailed: number;
+  visualDiffs: number;
+  fixesApplied: number;
+  lintFixCount: number;
+  iterations: number;
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreation: number;
+    cacheRead: number;
+  };
+  cost: number;
+  testFilePath: string;
+  tracePath: string;
+  error?: string;
+}
+
+// Re-export utility types for public API
+export type { AnalysisResult, TestFailure } from './utils/error-analyzer.js';
+export type { ConsoleLog, NetworkLog, DockerLog, CollectedLogs } from './utils/log-collector.js';
+export type { PlaywrightResult, PlaywrightOptions } from './utils/playwright-agent.js';
+export type { GeneratedTest } from './utils/test-generator.js';
+export type { VisualDiff, VisualTestOptions } from './utils/visual-tester.js';

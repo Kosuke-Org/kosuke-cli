@@ -41,6 +41,7 @@ export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCommand, shipCore } from './kosuke/commands/ship.js';
 export { buildCommand } from './kosuke/commands/build.js';
 export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
+export { testCommand, testCore } from './kosuke/commands/test.js';
 
 // Re-export utilities
 export { discoverFiles } from './kosuke/utils/file-discovery.js';
@@ -76,6 +77,20 @@ export type {
   BuildOptions,
   ReviewOptions,
   ReviewResult,
+  TestOptions,
+  TestResult,
+  // Testing utility types
+  AnalysisResult,
+  TestFailure,
+  ConsoleLog,
+  NetworkLog,
+  DockerLog,
+  CollectedLogs,
+  PlaywrightResult,
+  PlaywrightOptions,
+  GeneratedTest,
+  VisualDiff,
+  VisualTestOptions,
 } from './kosuke/types.js';
 
 export type { ValidationResult } from './kosuke/utils/validator.js';
