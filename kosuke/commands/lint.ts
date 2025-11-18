@@ -4,9 +4,9 @@
  * Strategy: Run linter, give errors to Claude, let it fix them
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { runLint } from '../utils/validator.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
+import { runAgent } from '../utils/claude-agent.js';
 import type { LintOptions } from '../types.js';
 
 interface LintFixResult {
@@ -54,47 +54,16 @@ ${lintErrors}
 
 Start by reading the files with errors and fixing them one by one.`;
 
-  const options: Options = {
-    model: 'claude-sonnet-4-5',
-    systemPrompt,
-    maxTurns: 20,
-    cwd: workspaceRoot,
-    permissionMode: 'bypassPermissions',
-  };
-
   try {
-    const responseStream = query({ prompt: promptText, options });
+    const result = await runAgent(promptText, {
+      systemPrompt,
+      maxTurns: 20,
+      cwd: workspaceRoot,
+      verbosity: 'normal',
+    });
 
-    let fixCount = 0;
-
-    // Display Claude's actions
-    for await (const message of responseStream) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text' && block.text.trim()) {
-            const text = block.text.trim();
-            // Show key insights
-            if (
-              text.includes('fix') ||
-              text.includes('error') ||
-              text.includes('✅') ||
-              text.includes('❌')
-            ) {
-              console.log(`   💭 ${text}`);
-            }
-          } else if (block.type === 'tool_use') {
-            if (block.name === 'write' || block.name === 'search_replace') {
-              fixCount++;
-              console.log(`   🔧 Applying fix ${fixCount}...`);
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`\n✨ Claude completed (${fixCount} fixes applied)`);
-    return fixCount > 0;
+    console.log(`\n✨ Claude completed (${result.fixCount} fixes applied)`);
+    return result.fixCount > 0;
   } catch (error) {
     console.error('\n❌ Error during Claude fixing:', error);
     return false;

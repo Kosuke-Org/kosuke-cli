@@ -40,3 +40,8 @@ next-env.d.ts
 .husky/_
 
 mcp.json
+
+docs.md
+
+# temporary files
+.tmp

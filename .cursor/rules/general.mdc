@@ -19,17 +19,23 @@ You are thoughtful, precise, and focus on delivering maintainable CLI tools with
 ```
 kosuke-cli/
 ├── index.ts              # CLI entry point with command dispatcher
+├── lib.ts                # Library API for programmatic usage
 ├── kosuke/
-│   ├── commands/         # Command implementations (sync-rules, analyse, lint)
-│   │   ├── sync-rules.ts
-│   │   ├── analyse.ts
-│   │   └── lint.ts
+│   ├── commands/         # Command implementations
+│   │   ├── sync-rules.ts     # Sync rules from kosuke-template
+│   │   ├── analyse.ts        # Analyze code quality
+│   │   ├── lint.ts           # Fix linting errors with Claude
+│   │   ├── requirements.ts   # Interactive requirements gathering
+│   │   └── getcode.ts        # Explore GitHub repos and fetch code
 │   ├── utils/            # Reusable utilities
-│   │   ├── file-discovery.ts  # File scanning with .kosukeignore
-│   │   ├── validator.ts       # Code validation helpers
-│   │   ├── git.ts             # Git operations wrapper
-│   │   ├── github.ts          # GitHub API integration
-│   │   └── batch-creator.ts   # Batch processing logic
+│   │   ├── file-discovery.ts      # File scanning with .kosukeignore
+│   │   ├── validator.ts           # Code validation helpers
+│   │   ├── git.ts                 # Git operations wrapper
+│   │   ├── github.ts              # GitHub API integration
+│   │   ├── batch-creator.ts       # Batch processing logic
+│   │   ├── claude-agent.ts        # Centralized Claude SDK integration
+│   │   ├── repository-manager.ts  # Clone and update GitHub repos
+│   │   └── repository-resolver.ts # Smart repository inference
 │   └── types.ts          # Shared TypeScript types
 ├── __tests__/            # Vitest test files
 │   └── utils/
@@ -85,6 +91,7 @@ Pre-commit hooks automatically run these checks via husky + lint-staged.
 - Export a single async function: `export async function commandName(options: Options)`
 - Handle all errors gracefully with try-catch
 - Use clear console output with emojis for better UX
+- For complex commands, export a `commandNameCore()` function for programmatic use
 
 ```typescript
 // kosuke/commands/example.ts
@@ -105,6 +112,61 @@ export async function exampleCommand(options: ExampleOptions = {}): Promise<void
   }
 }
 ```
+
+### GetCode Command Pattern
+
+The `getcode` command demonstrates a complex pattern for code exploration:
+
+**Features:**
+- Smart repository resolution (explicit, inferred, or template)
+- Repository cloning/updating with caching
+- Claude Code Agent for exploration
+- Flexible argument parsing
+- Optional output to file
+
+**Structure:**
+```typescript
+// 1. Parse arguments with multiple formats
+export function parseGetCodeArgs(args: string[]): GetCodeOptions {
+  // Handle: kosuke getcode "query"
+  // Handle: kosuke getcode "owner/repo" "query"
+  // Handle: kosuke getcode --template "query"
+}
+
+// 2. Core logic (reusable programmatically)
+export async function getCodeCore(options: GetCodeOptions): Promise<CodeExplorationResult> {
+  // Resolve repository
+  const repoIdentifier = await resolveRepository(...);
+  
+  // Clone or update
+  const repoInfo = await ensureRepoReady(repoIdentifier);
+  
+  // Explore with Claude
+  const result = await runAgent(query, {
+    systemPrompt: buildExplorationSystemPrompt(...),
+    cwd: repoInfo.localPath,
+  });
+  
+  return result;
+}
+
+// 3. CLI wrapper (handles display and file output)
+export async function getCodeCommand(options: GetCodeOptions): Promise<void> {
+  const result = await getCodeCore(options);
+  
+  if (options.output) {
+    writeFileSync(options.output, formatExplorationResult(result));
+  } else {
+    console.log(result);
+  }
+}
+```
+
+**Key Patterns:**
+- Separate parsing, core logic, and display concerns
+- Reusable core function for library consumers
+- Clear error messages with usage examples
+- Cost tracking and display
 
 ### CLI Entry Point (index.ts)
 
@@ -127,7 +189,7 @@ Required environment variables:
 
 - Use `glob` for file pattern matching
 - Support `.kosukeignore` file (same syntax as `.gitignore`)
-- Always exclude: `node_modules/`, `dist/`, `build/`, `.next/`, `__pycache__/`
+- Always exclude: `node_modules/`, `dist/`, `build/`, `.next/`, `__pycache__/`, `.tmp/`
 - Use `ignore` package for .gitignore-style filtering
 
 ```typescript
@@ -138,6 +200,10 @@ const ig = ignore().add(ignorePatterns);
 const files = await glob(pattern, { cwd, nodir: true });
 const filtered = files.filter(file => !ig.ignores(file));
 ```
+
+**Directory Structure:**
+- `.tmp/repos/` - Cached GitHub repositories (owner__repo format)
+- Add `.tmp/` to `.gitignore` to avoid committing cached repos
 
 ### Git Operations (simple-git)
 
@@ -182,26 +248,73 @@ await octokit.pulls.create({
 
 ### Claude AI SDK Integration
 
-- Use `@anthropic-ai/claude-agent-sdk` for AI-powered operations
-- Set appropriate `maxTurns` to prevent infinite loops
-- Use `permissionMode: 'bypassPermissions'` for automation
-- Stream responses for better UX feedback
+- Use `runAgent` from `claude-agent.ts` for all AI operations
+- Centralized agent execution with built-in logging and cost tracking
+- Support for different verbosity levels: `minimal`, `normal`, `verbose`
+- Automatic token usage tracking and cost calculation
 
 ```typescript
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { runAgent, formatCostBreakdown } from '@/kosuke/utils/claude-agent.js';
 
-const options: Options = {
-  model: 'claude-sonnet-4-5',
+const result = await runAgent(prompt, {
   systemPrompt: 'You are a code quality expert...',
   maxTurns: 20,
+  model: 'claude-sonnet-4-5',
   cwd: process.cwd(),
+  verbosity: 'normal', // 'minimal' | 'normal' | 'verbose'
   permissionMode: 'bypassPermissions',
-};
+});
 
-const responseStream = query({ prompt, options });
+console.log(`Fixes applied: ${result.fixCount}`);
+console.log(`Cost: ${formatCostBreakdown(result)}`);
+```
 
-for await (const message of responseStream) {
-  // Process streaming response
+**Cost Calculation:**
+- Input: $3 per million tokens
+- Output: $15 per million tokens
+- Cache creation: $3.75 per million tokens
+- Cache read: $0.30 per million tokens
+
+### Repository Management
+
+- Use `repository-manager.ts` to clone and update GitHub repositories
+- Use `repository-resolver.ts` for smart repository inference from queries
+- Repositories are cached in `.tmp/repos/` directory
+- Automatic updates when repository already exists locally
+
+```typescript
+import { ensureRepoReady } from '@/kosuke/utils/repository-manager.js';
+import { resolveRepository } from '@/kosuke/utils/repository-resolver.js';
+
+// Resolve repository (can infer from query)
+const repoIdentifier = await resolveRepository(
+  repo,
+  query,
+  useTemplate,
+  process.env.GITHUB_TOKEN
+);
+
+// Clone or update repository
+const repoInfo = await ensureRepoReady(repoIdentifier);
+
+// Use repoInfo.localPath for operations
+console.log(`Repository ready at: ${repoInfo.localPath}`);
+```
+
+**Repository Resolution:**
+- Explicit format: `owner/repo` or GitHub URLs
+- Smart inference: Detects repos mentioned in queries
+- Well-known repos: `nextjs`, `react`, `shadcn`, `prisma`, etc.
+- Kosuke repos: Automatically resolves to `Kosuke-Org/*`
+- Template flag: `--template` uses `kosuke-template`
+
+**Repository Info:**
+```typescript
+interface RepositoryInfo {
+  owner: string;
+  repo: string;
+  fullName: string;   // "owner/repo"
+  localPath: string;  // ".tmp/repos/owner__repo"
 }
 ```
 
@@ -259,6 +372,21 @@ export async function getFiles(): Promise<string[]> {
 - **types.ts** - Shared types used across multiple commands
 - **Inline types** - Command-specific types defined in command files
 - **No duplicate types** - Reuse types when possible
+
+**Core Types:**
+```typescript
+// Command options
+interface AnalyseOptions { pr?: boolean; baseBranch?: string; scope?: string; types?: string[]; }
+interface LintOptions { pr?: boolean; baseBranch?: string; }
+interface SyncRulesOptions { force?: boolean; pr?: boolean; baseBranch?: string; }
+interface GetCodeOptions { repo?: string; query: string; template?: boolean; output?: string; }
+
+// Data structures
+interface Batch { name: string; directory: string; files: string[]; }
+interface Fix { file: string; type: FixType; description: string; linesChanged: number; }
+interface RepositoryInfo { owner: string; repo: string; fullName: string; localPath: string; }
+interface CodeExplorationResult { repository: string; query: string; response: string; filesReferenced: string[]; tokensUsed: {...}; cost: number; }
+```
 
 ## Testing Strategy (Vitest)
 
@@ -404,10 +532,32 @@ import { helper } from './helper';
 
 ### npm Package Configuration
 
-- **Entry point**: `dist/index.js` (compiled from index.ts)
+- **CLI Entry**: `dist/index.js` (compiled from index.ts)
+- **Library Entry**: `dist/lib.js` (compiled from lib.ts)
 - **Binary**: `kosuke` command maps to `dist/index.js`
 - **Files to publish**: Only `dist/`, `README.md`, `LICENSE`
 - **Shebang**: `#!/usr/bin/env node` at top of index.ts
+
+**Dual Mode Support:**
+```json
+{
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "bin": { "kosuke": "dist/index.js" },
+  "exports": {
+    ".": { "import": "./dist/lib.js", "types": "./dist/lib.d.ts" },
+    "./cli": "./dist/index.js"
+  }
+}
+```
+
+**Usage as Library:**
+```typescript
+import { analyseCommand, lintCommand, discoverFiles } from '@kosuke-ai/cli';
+
+await analyseCommand({ scope: 'src', pr: false });
+const files = await discoverFiles({ types: ['ts', 'tsx'] });
+```
 
 ### Pre-publish Checklist
 
@@ -528,6 +678,48 @@ console.log(`Processing Step ${step}/${total}`);
 console.log(`${'='.repeat(60)}\n`);
 ```
 
+### Repository Cloning Pattern
+
+```typescript
+// 1. Resolve repository identifier
+const repoIdentifier = await resolveRepository(
+  providedRepo,
+  userQuery,
+  useTemplate,
+  githubToken
+);
+
+// 2. Ensure repository is cloned and up-to-date
+const repoInfo = await ensureRepoReady(repoIdentifier);
+
+// 3. Use repository for operations
+await performOperations(repoInfo.localPath);
+
+// Repository is cached in .tmp/repos/ for future use
+```
+
+### Agent Verbosity Pattern
+
+```typescript
+// Minimal: Only show tool usage (fixes, file reads)
+const result = await runAgent(prompt, {
+  systemPrompt,
+  verbosity: 'minimal',
+});
+
+// Normal: Show tool usage + key insights (default)
+const result = await runAgent(prompt, {
+  systemPrompt,
+  verbosity: 'normal',
+});
+
+// Verbose: Show all text output + tool usage
+const result = await runAgent(prompt, {
+  systemPrompt,
+  verbosity: 'verbose',
+});
+```
+
 ## Troubleshooting Common Issues
 
 ### "Module not found" errors
@@ -552,8 +744,11 @@ console.log(`${'='.repeat(60)}\n`);
 
 1. ✅ Create command function in `kosuke/commands/`
 2. ✅ Add command to dispatcher in `index.ts`
-3. ✅ Add help text and examples
-4. ✅ Write tests in `__tests__/`
-5. ✅ Update README.md with command documentation
-6. ✅ Run `npm run check:all` before committing
-7. ✅ Test with `npm run dev <command>`
+3. ✅ Export command from `lib.ts` if it should be available programmatically
+4. ✅ Add types to `types.ts` if shared across commands
+5. ✅ Add help text and examples in `index.ts`
+6. ✅ Write tests in `__tests__/`
+7. ✅ Update README.md with command documentation
+8. ✅ Run `npm run check:all` before committing
+9. ✅ Test CLI: `npm run dev <command>`
+10. ✅ Test library: `npm run dev:link` in another project

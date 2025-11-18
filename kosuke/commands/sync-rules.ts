@@ -2,13 +2,13 @@
  * Sync rules command - Syncs rules and documentation from kosuke-template
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { isKosukeTemplateRepo } from '../utils/git.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
 import { runFormat, runLint } from '../utils/validator.js';
+import { runAgent } from '../utils/claude-agent.js';
 import { fixLintErrors } from './lint.js';
 import type { RulesAdaptation, SyncRulesOptions } from '../types.js';
 
@@ -114,33 +114,15 @@ Take your time to explore the codebase and understand the context before making 
 
 Explore the repository, read both files, identify improvements, and update the current version conservatively.`;
 
-  const options: Options = {
-    model: 'claude-sonnet-4-5',
-    systemPrompt,
-    maxTurns: 30,
-    cwd: workspaceRoot,
-    permissionMode: 'bypassPermissions',
-    additionalDirectories: [TEMP_DIR, workspaceRoot],
-  };
-
   try {
-    const responseStream = query({ prompt: promptText, options });
-
-    // Display Claude's reasoning and actions
-    for await (const message of responseStream) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text' && block.text.trim()) {
-            console.log(`   💭 ${block.text.trim()}`);
-          } else if (block.type === 'tool_use') {
-            const inputStr = JSON.stringify(block.input, null, 0);
-            const shortInput = inputStr.length > 100 ? inputStr.substring(0, 97) + '...' : inputStr;
-            console.log(`   🔧 ${block.name}: ${shortInput}`);
-          }
-        }
-      }
-    }
+    // Note: Claude Agent SDK doesn't support additionalDirectories in AgentConfig
+    // The agent can access TEMP_DIR via relative paths from workspaceRoot
+    await runAgent(promptText, {
+      systemPrompt,
+      maxTurns: 30,
+      cwd: workspaceRoot,
+      verbosity: 'verbose',
+    });
 
     // Read the adapted content
     const adaptedContent = existsSync(currentFilePath)
@@ -215,29 +197,16 @@ Provide a brief summary (3-5 bullet points) highlighting:
 
 Keep it concise and developer-friendly. Use bullet points starting with emojis.`;
 
-  const options: Options = {
-    model: 'claude-sonnet-4-5',
-    maxTurns: 1,
-    cwd: process.cwd(),
-  };
-
   try {
-    const responseStream = query({ prompt, options });
-
-    let summary = '';
-    for await (const message of responseStream) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text') {
-            summary += block.text;
-          }
-        }
-      }
-    }
+    const result = await runAgent(prompt, {
+      maxTurns: 1,
+      cwd: process.cwd(),
+      verbosity: 'minimal',
+      systemPrompt: '', // No system prompt needed for this simple task
+    });
 
     console.log('   ✅ Summary generated\n');
-    return summary.trim();
+    return result.response.trim();
   } catch {
     console.warn('   ⚠️  Failed to generate summary, using fallback');
     return 'Updated rules and documentation from kosuke-template';
@@ -323,14 +292,19 @@ async function syncRulesCore(force: boolean): Promise<SyncResult> {
   console.log('\n🔧 Running formatting and linting...');
 
   const formatResult = await runFormat();
-  if (!formatResult.success) {
+  if (formatResult.warning) {
+    console.log(`   ${formatResult.warning}`);
+  } else if (!formatResult.success) {
     console.error('   ❌ Formatting failed:\n', formatResult.error);
     throw new Error('Formatting validation failed');
+  } else {
+    console.log('   ✅ Formatting completed');
   }
-  console.log('   ✅ Formatting completed');
 
   let lintResult = await runLint();
-  if (!lintResult.success) {
+  if (lintResult.warning) {
+    console.log(`   ${lintResult.warning}`);
+  } else if (!lintResult.success) {
     console.log('   ⚠️  Linting errors detected, attempting to fix...');
 
     // Try to fix lint errors with Claude (max 2 attempts)
@@ -356,8 +330,9 @@ async function syncRulesCore(force: boolean): Promise<SyncResult> {
       console.error('   ❌ Linting failed after attempts:\n', lintResult.error);
       throw new Error('Linting validation failed');
     }
+  } else {
+    console.log('   ✅ Linting completed');
   }
-  console.log('   ✅ Linting completed');
 
   return {
     adaptation,

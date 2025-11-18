@@ -12,37 +12,12 @@
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import * as readline from 'readline';
 import { join } from 'path';
+import { calculateCost } from '../utils/claude-agent.js';
 
 interface RequirementsSession {
   productDescription: string;
   conversationHistory: string[];
   isFirstRequest: boolean;
-}
-
-/**
- * Calculate cost based on Claude Sonnet 4.5 pricing
- * - $3 per million input tokens
- * - $15 per million output tokens
- * - $3.75 per million cache creation tokens
- * - $0.30 per million cache read tokens
- */
-function calculateCost(
-  inputTokens: number,
-  outputTokens: number,
-  cacheCreationTokens: number = 0,
-  cacheReadTokens: number = 0
-): number {
-  const INPUT_COST_PER_MILLION = 3.0;
-  const OUTPUT_COST_PER_MILLION = 15.0;
-  const CACHE_CREATION_COST_PER_MILLION = 3.75;
-  const CACHE_READ_COST_PER_MILLION = 0.3;
-
-  const inputCost = (inputTokens / 1_000_000) * INPUT_COST_PER_MILLION;
-  const outputCost = (outputTokens / 1_000_000) * OUTPUT_COST_PER_MILLION;
-  const cacheCreationCost = (cacheCreationTokens / 1_000_000) * CACHE_CREATION_COST_PER_MILLION;
-  const cacheReadCost = (cacheReadTokens / 1_000_000) * CACHE_READ_COST_PER_MILLION;
-
-  return inputCost + outputCost + cacheCreationCost + cacheReadCost;
 }
 
 /**

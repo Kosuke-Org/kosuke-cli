@@ -8,13 +8,13 @@
  * - If --pr flag: Push all commits and create single PR
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { discoverFiles } from '../utils/file-discovery.js';
 import { createBatches } from '../utils/batch-creator.js';
 import { runLint, runTypecheck } from '../utils/validator.js';
 import { runWithPRBatched } from '../utils/pr-orchestrator.js';
+import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
 import { fixLintErrors } from './lint.js';
 import type { AnalyseOptions, Batch, Fix } from '../types.js';
 
@@ -37,32 +37,6 @@ interface AnalyseResult {
   totalOutputTokens: number;
   totalCacheCreationTokens: number;
   totalCacheReadTokens: number;
-}
-
-/**
- * Calculate cost based on Claude Sonnet 4.5 pricing
- * - $3 per million input tokens
- * - $15 per million output tokens
- * - $3.75 per million cache creation tokens (input + 25% overhead)
- * - $0.30 per million cache read tokens (90% discount from input)
- */
-function calculateCost(
-  inputTokens: number,
-  outputTokens: number,
-  cacheCreationTokens: number = 0,
-  cacheReadTokens: number = 0
-): number {
-  const INPUT_COST_PER_MILLION = 3.0;
-  const OUTPUT_COST_PER_MILLION = 15.0;
-  const CACHE_CREATION_COST_PER_MILLION = 3.75;
-  const CACHE_READ_COST_PER_MILLION = 0.3;
-
-  const inputCost = (inputTokens / 1_000_000) * INPUT_COST_PER_MILLION;
-  const outputCost = (outputTokens / 1_000_000) * OUTPUT_COST_PER_MILLION;
-  const cacheCreationCost = (cacheCreationTokens / 1_000_000) * CACHE_CREATION_COST_PER_MILLION;
-  const cacheReadCost = (cacheReadTokens / 1_000_000) * CACHE_READ_COST_PER_MILLION;
-
-  return inputCost + outputCost + cacheCreationCost + cacheReadCost;
 }
 
 /**
@@ -110,61 +84,13 @@ ${batch.files.map((f) => `- ${f}`).join('\n')}
 
 Start by reading CLAUDE.md, then analyze and fix the batch files.`;
 
-  const options: Options = {
-    model: 'claude-sonnet-4-5',
-    systemPrompt,
-    maxTurns: 15,
-    cwd: workspaceRoot,
-    permissionMode: 'bypassPermissions',
-  };
-
   try {
-    const responseStream = query({ prompt: promptText, options });
-
-    let fixCount = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheCreationTokens = 0;
-    let cacheReadTokens = 0;
-
-    // Display Claude's reasoning and actions
-    for await (const message of responseStream) {
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text' && block.text.trim()) {
-            // Only show key insights, not every detail
-            const text = block.text.trim();
-            if (
-              text.includes('violation') ||
-              text.includes('fix') ||
-              text.includes('issue') ||
-              text.includes('✅') ||
-              text.includes('❌')
-            ) {
-              console.log(`   💭 ${text}`);
-            }
-          } else if (block.type === 'tool_use') {
-            if (block.name === 'write' || block.name === 'search_replace') {
-              fixCount++;
-              console.log(`   🔧 Applying fix ${fixCount}...`);
-            }
-          }
-        }
-      }
-
-      // Track token usage from the response
-      if (message.type === 'result' && message.subtype === 'success') {
-        // Capture all token types including cache-related tokens
-        inputTokens += message.usage.input_tokens || 0;
-        outputTokens += message.usage.output_tokens || 0;
-        cacheCreationTokens += message.usage.cache_creation_input_tokens || 0;
-        cacheReadTokens += message.usage.cache_read_input_tokens || 0;
-      }
-    }
-
-    // Calculate cost for this batch
-    const cost = calculateCost(inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
+    const result = await runAgent(promptText, {
+      systemPrompt,
+      maxTurns: 15,
+      cwd: workspaceRoot,
+      verbosity: 'normal',
+    });
 
     // Return placeholder fixes (real fix tracking would require parsing Claude's edits)
     const fixes: Fix[] = batch.files.map((file) => ({
@@ -174,26 +100,17 @@ Start by reading CLAUDE.md, then analyze and fix the batch files.`;
       linesChanged: 0,
     }));
 
-    console.log(`\n   ✨ Batch analysis complete (${fixCount} fixes applied)`);
-
-    // Build detailed cost breakdown
-    const tokenBreakdown = [];
-    if (inputTokens > 0) tokenBreakdown.push(`${inputTokens.toLocaleString()} input`);
-    if (outputTokens > 0) tokenBreakdown.push(`${outputTokens.toLocaleString()} output`);
-    if (cacheCreationTokens > 0)
-      tokenBreakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
-    if (cacheReadTokens > 0) tokenBreakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
-
-    console.log(`   💰 Cost: $${cost.toFixed(4)} (${tokenBreakdown.join(' + ')} tokens)`);
+    console.log(`\n   ✨ Batch analysis complete (${result.fixCount} fixes applied)`);
+    console.log(`   💰 Cost: ${formatCostBreakdown(result)}`);
 
     return {
       batch,
-      fixes: fixCount > 0 ? fixes : [],
-      inputTokens,
-      outputTokens,
-      cacheCreationTokens,
-      cacheReadTokens,
-      cost,
+      fixes: result.fixCount > 0 ? fixes : [],
+      inputTokens: result.tokensUsed.input,
+      outputTokens: result.tokensUsed.output,
+      cacheCreationTokens: result.tokensUsed.cacheCreation,
+      cacheReadTokens: result.tokensUsed.cacheRead,
+      cost: result.cost,
       skipped: false,
     };
   } catch (error) {

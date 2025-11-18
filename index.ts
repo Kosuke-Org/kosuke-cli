@@ -8,12 +8,16 @@
  *   analyse               Analyze and fix code quality issues
  *   lint                  Fix linting errors with Claude AI
  *   requirements          Interactive requirements gathering
+ *   getcode               Explore GitHub repositories and fetch code
+ *   tickets               Generate implementation tickets from requirements
  *
  * Usage:
  *   bun run kosuke sync-rules
  *   bun run kosuke analyse
  *   bun run kosuke lint
  *   bun run kosuke requirements
+ *   bun run kosuke getcode "query"
+ *   bun run kosuke tickets
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -25,6 +29,8 @@ import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { analyseCommand } from './kosuke/commands/analyse.js';
 import { lintCommand } from './kosuke/commands/lint.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
+import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
+import { ticketsCommand } from './kosuke/commands/tickets.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -72,6 +78,22 @@ async function main() {
 
       case 'requirements': {
         await requirementsCommand();
+        break;
+      }
+
+      case 'getcode': {
+        const options = parseGetCodeArgs(args);
+        await getCodeCommand(options);
+        break;
+      }
+
+      case 'tickets': {
+        const options = {
+          path: args.find((arg) => arg.startsWith('--path='))?.split('=')[1],
+          output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
+          template: args.find((arg) => arg.startsWith('--template='))?.split('=')[1],
+        };
+        await ticketsCommand(options);
         break;
       }
 
@@ -144,6 +166,37 @@ COMMANDS:
     
     Examples:
       kosuke requirements
+
+  getcode [repo] "<query>" [options]
+    Explore GitHub repositories and fetch code implementations
+    Uses Claude Code Agent to find and explain code
+    
+    Options:
+      --template, -t        Use kosuke-template repository
+      --output=<file>       Save output to file
+    
+    Examples:
+      kosuke getcode "facebook/react" "How does reconciliation work?"
+      kosuke getcode "How is routing implemented in Next.js?"
+      kosuke getcode --template "What authentication system is used?"
+      kosuke getcode -t "Show me pagination examples"
+
+  tickets [options]
+    Generate implementation tickets from requirements document
+    Analyzes requirements and creates structured tickets in three phases:
+    1. Schema tickets (database design)
+    2. Backend tickets (API, services, business logic)
+    3. Frontend tickets (pages, components, UI)
+    
+    Options:
+      --path=<file>         Path to requirements document (default: docs.md)
+      --output=<file>       Output file for tickets (default: tickets.json)
+      --template=<repo>     Custom template repository (default: kosuke-template)
+    
+    Examples:
+      kosuke tickets                          # Use docs.md
+      kosuke tickets --path=requirements.md   # Custom requirements file
+      kosuke tickets --output=my-tickets.json # Custom output file
 
 WORKFLOW:
 
