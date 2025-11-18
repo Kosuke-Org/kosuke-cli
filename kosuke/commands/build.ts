@@ -4,6 +4,7 @@
  * This command processes all "Todo" and "Error" tickets sequentially,
  * implementing each one using the ship command with --commit flag.
  * Each ticket is committed individually to the current branch.
+ * Frontend tickets automatically include the --test flag.
  *
  * Usage:
  *   kosuke build                           # Process and commit all tickets
@@ -124,11 +125,15 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       console.log('='.repeat(80) + '\n');
 
       try {
-        // Use ship command with --commit flag
+        // Determine if this is a frontend ticket
+        const isFrontendTicket = ticket.id.startsWith('FRONTEND-');
+
+        // Use ship command with --commit flag, add --test for frontend tickets
         await shipCommand({
           ticket: ticket.id,
           commit: true,
           ticketsFile,
+          test: isFrontendTicket,
         });
 
         console.log(`\n✅ ${ticket.id} completed and committed successfully\n`);

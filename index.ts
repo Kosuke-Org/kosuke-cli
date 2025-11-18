@@ -113,10 +113,11 @@ async function main() {
         const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
         if (!ticketArg) {
           console.error('❌ --ticket flag is required\n');
-          console.log('Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--commit | --pr]');
+          console.log('Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr]');
           console.log('\nExamples:');
           console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
           console.log('  kosuke ship --ticket=BACKEND-2 --review      # With review');
+          console.log('  kosuke ship --ticket=FRONTEND-1 --test       # With testing');
           console.log('  kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch');
           console.log('  kosuke ship --ticket=BACKEND-3 --pr          # Create PR (new branch)');
           process.exit(1);
@@ -125,6 +126,7 @@ async function main() {
         const options = {
           ticket: ticketArg,
           review: args.includes('--review'),
+          test: args.includes('--test'),
           commit: args.includes('--commit'),
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
@@ -282,11 +284,12 @@ COMMANDS:
 
   ship --ticket=<ID> [options]
     Implement a single ticket from tickets.json
-    Follows CLAUDE.md rules, runs linting, and optionally performs review
+    Follows CLAUDE.md rules, runs linting, and optionally performs review and tests
     
     Options:
       --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
       --review              Perform code review step after implementation
+      --test                Run E2E tests after implementation
       --commit              Commit and push to current branch
       --pr                  Create new branch and pull request (mutually exclusive with --commit)
       --base-branch=<name>  Base branch for PR (default: current branch)
@@ -295,6 +298,7 @@ COMMANDS:
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
       kosuke ship --ticket=BACKEND-2 --review      # Implement with review
+      kosuke ship --ticket=FRONTEND-1 --test       # Implement with testing
       kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch
       kosuke ship --ticket=BACKEND-3 --pr          # Create new branch + PR
       kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
@@ -303,6 +307,7 @@ COMMANDS:
     Batch process all "Todo" and "Error" tickets from tickets.json
     Automatically commits each ticket to current branch
     Processes tickets in order: Schema → Backend → Frontend
+    Frontend tickets automatically include E2E testing
     
     Options:
       --tickets=<file>      Path to tickets file (default: tickets.json)

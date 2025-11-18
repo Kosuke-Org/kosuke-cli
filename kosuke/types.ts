@@ -117,6 +117,7 @@ export interface ShipOptions {
   pr?: boolean; // Create pull request (new branch)
   baseBranch?: string; // Base branch for PR
   ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  test?: boolean; // Run tests after implementation
 }
 
 export interface BuildOptions {

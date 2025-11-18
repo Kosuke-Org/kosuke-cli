@@ -9,6 +9,7 @@
  *   kosuke ship --ticket=BACKEND-2 --review          # Implement with review
  *   kosuke ship --ticket=FRONTEND-1 --commit         # Implement and commit to current branch
  *   kosuke ship --ticket=BACKEND-3 --pr              # Implement and create PR (new branch)
+ *   kosuke ship --ticket=FRONTEND-1 --test           # Implement and run tests
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
  */
 
@@ -19,6 +20,7 @@ import { ensureRepoReady } from '../utils/repository-manager.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
 import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { reviewCore } from './review.js';
+import { testCore } from './test.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
 import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 
@@ -191,7 +193,7 @@ Begin by reading recent changes and reviewing them against the standards.`;
  * Core ship logic (git-agnostic, reusable)
  */
 export async function shipCore(options: ShipOptions): Promise<ShipResult> {
-  const { ticket: ticketId, review = false, ticketsFile = 'tickets.json' } = options;
+  const { ticket: ticketId, review = false, test = false, ticketsFile = 'tickets.json' } = options;
   const cwd = process.cwd();
   const ticketsPath = join(cwd, ticketsFile);
 
@@ -311,7 +313,34 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       reviewPerformed = true;
     }
 
-    // 8. Update status to Done
+    // 8. Test phase (if test flag is set)
+    let testFixCount = 0;
+    if (test) {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🧪 Phase ${review ? '4' : '3'}: Testing`);
+      console.log(`${'='.repeat(60)}\n`);
+
+      const testResult = await testCore({
+        ticket: ticketId,
+        ticketsFile,
+      });
+
+      testFixCount = testResult.fixesApplied;
+      totalInputTokens += testResult.tokensUsed.input;
+      totalOutputTokens += testResult.tokensUsed.output;
+      totalCacheCreationTokens += testResult.tokensUsed.cacheCreation;
+      totalCacheReadTokens += testResult.tokensUsed.cacheRead;
+      totalCost += testResult.cost;
+
+      if (!testResult.success) {
+        throw new Error(`Tests failed after ${testResult.iterations} iterations`);
+      }
+
+      console.log(`\n✨ Testing completed (${testFixCount} fixes applied)`);
+      console.log(`💰 Testing cost: $${testResult.cost.toFixed(4)}`);
+    }
+
+    // 9. Update status to Done
     console.log('\n📝 Updating ticket status to Done...');
     updateTicketStatus(ticketsPath, ticketId, 'Done');
     console.log('   ✅ Ticket marked as Done\n');
