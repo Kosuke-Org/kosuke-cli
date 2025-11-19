@@ -195,6 +195,14 @@ export interface TestResult {
   error?: string;
 }
 
+// CLI Logging types
+export type {
+  CommandName,
+  ExecutionStatus,
+  CliLogData,
+  CommandExecutionContext,
+} from './utils/logger.js';
+
 // Re-export utility types for public API
 export type { AnalysisResult, TestFailure } from './utils/error-analyzer.js';
 export type { ConsoleLog, NetworkLog, DockerLog, CollectedLogs } from './utils/log-collector.js';

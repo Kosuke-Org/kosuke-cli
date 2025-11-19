@@ -96,6 +96,46 @@ ANTHROPIC_API_KEY=your-api-key-here
 GITHUB_TOKEN=your-github-token-here
 ```
 
+### CLI Logging (Optional)
+
+Kosuke CLI can automatically log command executions to kosuke-core for analytics, cost monitoring, and debugging. This feature is optional and requires additional configuration.
+
+**Environment Variables:**
+
+```bash
+# Optional: Enable logging to kosuke-core
+export KOSUKE_BASE_URL="https://your-kosuke-core.com"
+export KOSUKE_API_KEY="your-cli-api-key"
+export KOSUKE_PROJECT_ID="your-project-uuid"
+```
+
+Or add to your `.env` file:
+
+```env
+KOSUKE_BASE_URL=https://your-kosuke-core.com
+KOSUKE_API_KEY=your-cli-api-key
+KOSUKE_PROJECT_ID=xxx-xxx-xxx-xxx-xxx
+```
+
+**What gets logged:**
+
+When configured, Kosuke CLI automatically logs:
+
+- Command execution (ship, test, review, getcode, tickets)
+- Token usage (input, output, cache creation, cache read)
+- Cost breakdown (calculated from token usage)
+- Execution time and performance metrics
+- Command-specific metrics (fixes applied, tests run, etc.)
+- Success/error status
+
+**Privacy:**
+
+- Logging is non-blocking and will not interrupt commands if it fails
+- No sensitive data (API keys, tokens, passwords) is logged
+- File paths are logged, but not file contents
+- Logging is automatically enabled when all three environment variables are set
+- Logging can be safely omitted if not using kosuke-core
+
 ## Workflow
 
 By default, all commands apply changes **locally** without git operations. This allows you to:

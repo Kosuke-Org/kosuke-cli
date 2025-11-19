@@ -11,7 +11,10 @@
  *   getCodeCore,
  *   discoverFiles,
  *   runLint,
- *   type ValidationResult
+ *   logger,
+ *   withCommandTracking,
+ *   type ValidationResult,
+ *   type CommandExecutionContext
  * } from '@kosuke-ai/cli';
  *
  * // Run analysis programmatically
@@ -28,6 +31,13 @@
  *
  * // Discover files
  * const files = await discoverFiles({ types: ['ts', 'tsx'] });
+ *
+ * // Track command execution with automatic logging
+ * await withCommandTracking('ship', async (ctx: CommandExecutionContext) => {
+ *   // Your command logic here
+ *   ctx.fixesApplied = 5;
+ *   ctx.filesModified = ['src/app.ts'];
+ * });
  * ```
  */
 
@@ -57,6 +67,7 @@ export {
 } from './kosuke/utils/validator.js';
 export { getRepoLocalPath } from './kosuke/utils/repository-manager.js';
 export { validateRepoAccess } from './kosuke/utils/repository-resolver.js';
+export { logger, withCommandTracking, setupCancellationHandler } from './kosuke/utils/logger.js';
 
 // Re-export types
 export type {
@@ -91,6 +102,11 @@ export type {
   GeneratedTest,
   VisualDiff,
   VisualTestOptions,
+  // Logger types
+  CommandName,
+  ExecutionStatus,
+  CliLogData,
+  CommandExecutionContext,
 } from './kosuke/types.js';
 
 export type { ValidationResult } from './kosuke/utils/validator.js';

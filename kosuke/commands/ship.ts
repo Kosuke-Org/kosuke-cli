@@ -22,6 +22,7 @@ import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { reviewCore } from './review.js';
 import { testCore } from './test.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 
 interface TicketsFile {
@@ -422,6 +423,10 @@ export async function shipCommand(options: ShipOptions): Promise<void> {
   const { ticket: ticketId, commit = false, pr = false } = options;
   console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
 
+  // Initialize logging context
+  const logContext = logger.createContext('ship');
+  const cleanupHandler = setupCancellationHandler(logContext);
+
   try {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -472,10 +477,19 @@ Implements ticket **${ticketId}** from tickets.json.
           // Run core implementation
           const result = await shipCore(options);
 
+          // Track metrics
+          logger.trackTokens(logContext, result.tokensUsed);
+          logContext.fixesApplied +=
+            result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
+
           // Review git diff before committing
           const diffReview = await reviewGitDiff();
           diffReviewCost = diffReview.cost;
           diffReviewFixCount = diffReview.fixCount;
+
+          // Track diff review metrics
+          logger.trackTokens(logContext, diffReview.tokensUsed);
+          logContext.fixesApplied += diffReview.fixCount;
 
           return result;
         }
@@ -491,6 +505,10 @@ Implements ticket **${ticketId}** from tickets.json.
       console.log(`🔍 Git diff review fixes: ${diffReviewFixCount}`);
       console.log(`💰 Total cost: $${(shipResult.cost + diffReviewCost).toFixed(4)}`);
       console.log(`🔗 PR: ${prInfo.prUrl}`);
+
+      // Log successful execution
+      await logger.complete(logContext, 'success');
+      cleanupHandler();
     } else if (commit) {
       // Run core logic
       const result = await shipCore(options);
@@ -499,8 +517,17 @@ Implements ticket **${ticketId}** from tickets.json.
         throw new Error(result.error || 'Ship failed');
       }
 
+      // Track core metrics
+      logger.trackTokens(logContext, result.tokensUsed);
+      logContext.fixesApplied +=
+        result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
+
       // Review git diff before committing
       const diffReview = await reviewGitDiff();
+
+      // Track diff review metrics
+      logger.trackTokens(logContext, diffReview.tokensUsed);
+      logContext.fixesApplied += diffReview.fixCount;
 
       // Commit and push to current branch
       console.log('\n📝 Committing and pushing to current branch...');
@@ -515,6 +542,10 @@ Implements ticket **${ticketId}** from tickets.json.
       }
       console.log(`🔍 Git diff review fixes: ${diffReview.fixCount}`);
       console.log(`💰 Total cost: $${(result.cost + diffReview.cost).toFixed(4)}`);
+
+      // Log successful execution
+      await logger.complete(logContext, 'success');
+      cleanupHandler();
     } else {
       // Run core logic without any git operations
       const result = await shipCore(options);
@@ -522,6 +553,11 @@ Implements ticket **${ticketId}** from tickets.json.
       if (!result.success) {
         throw new Error(result.error || 'Ship failed');
       }
+
+      // Track core metrics
+      logger.trackTokens(logContext, result.tokensUsed);
+      logContext.fixesApplied +=
+        result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
 
       console.log('\n✅ Ship completed successfully!');
       console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
@@ -533,9 +569,18 @@ Implements ticket **${ticketId}** from tickets.json.
       console.log(
         '\nℹ️  Changes applied locally. Use --commit to push or --pr to create a pull request.'
       );
+
+      // Log successful execution
+      await logger.complete(logContext, 'success');
+      cleanupHandler();
     }
   } catch (error) {
     console.error('\n❌ Ship failed:', error);
+
+    // Log failed execution
+    await logger.complete(logContext, 'error', error as Error);
+    cleanupHandler();
+
     throw error;
   }
 }

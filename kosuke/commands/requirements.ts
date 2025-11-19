@@ -41,7 +41,7 @@ function formatTokenUsage(
 }
 
 /**
- * Process a single Claude interaction
+ * Process a single Claude interaction with streaming support
  */
 async function processClaudeInteraction(
   userInput: string,
@@ -68,13 +68,13 @@ This is a web application product implementation request. You MUST follow this w
 
 1. **Analyze the Request**: Understand what product needs to be built
 2. **List Core Functionalities**: Present all features in clear bullet points
-3. **Define Implementation Plan**: Create a detailed plan with all required components
+3. **Design Interface & Wireframes**: Create visual structure of pages and components
 4. **Ask NUMBERED Clarification Questions**: List any ambiguities or missing requirements with numbers
 
 Format your response as:
 ---
-## Product Analysis
-[Brief description of what will be built]
+## Product Description
+[Brief description of what will be built - the core concept and purpose]
 
 ## Core Functionalities
 - [Functionality 1]
@@ -82,8 +82,28 @@ Format your response as:
 - [Functionality 3]
 ...
 
-## Implementation Plan
-[High-level technical approach and architecture]
+## Interface & Design
+Present the application structure as a visual wireframe using markdown. For each page/screen:
+
+### [Page Name]
+\`\`\`
+┌─────────────────────────────────────┐
+│ Header/Navigation                    │
+├─────────────────────────────────────┤
+│                                      │
+│  [Main Content Area]                 │
+│  - Component 1                       │
+│  - Component 2                       │
+│                                      │
+├─────────────────────────────────────┤
+│ Footer                               │
+└─────────────────────────────────────┘
+\`\`\`
+
+**Key Components:**
+- Component descriptions
+- User interactions
+- Data displayed
 
 ## Clarification Questions
 1. [Question 1]
@@ -97,6 +117,7 @@ WORKFLOW AFTER USER ANSWERS QUESTIONS:
 When the user has answered all questions and requirements are clear, create a comprehensive requirements document in docs.md with:
    - Product Overview
    - Core Functionalities (detailed)
+   - Interface & Design (with wireframes)
    - Technical Architecture
    - User Flows
    - Database Schema
@@ -127,8 +148,9 @@ IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT fo
   let outputTokens = 0;
   let cacheCreationTokens = 0;
   let cacheReadTokens = 0;
+  let isFirstOutput = true;
 
-  // Process the async generator
+  // Process the async generator with streaming
   for await (const message of responseStream) {
     if (message.type === 'user') {
       if (!newSessionId) {
@@ -138,13 +160,21 @@ IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT fo
       const content = message.message.content;
       for (const block of content) {
         if (block.type === 'text') {
+          // Stream text to console in real-time
+          if (block.text) {
+            if (isFirstOutput) {
+              process.stdout.write('> Claude:\n');
+              isFirstOutput = false;
+            }
+            process.stdout.write(block.text);
+          }
           responseText += block.text;
         } else if (block.type === 'tool_use') {
           // Show tool usage
           if (block.name === 'Write' || block.name === 'Edit') {
             const input = block.input as Record<string, unknown>;
             if (input.path === 'docs.md' || (input.path as string)?.includes('docs.md')) {
-              console.log('\n✍️  Generating docs.md...');
+              console.log('\n\n✍️  Generating docs.md...');
             }
           }
         }
@@ -174,9 +204,9 @@ IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT fo
  * Interactive requirements gathering loop
  */
 async function interactiveSession(): Promise<void> {
-  console.log(`\n${'═'.repeat(63)}`);
-  console.log('║     Kosuke Requirements - Interactive Requirements Tool     ║');
-  console.log(`${'═'.repeat(63)}\n`);
+  console.log(`\n${'═'.repeat(90)}`);
+  console.log('║              Kosuke Requirements - Interactive Requirements Tool              ║');
+  console.log(`${'═'.repeat(90)}\n`);
 
   console.log('💡 This tool will help you create comprehensive product requirements.\n');
   console.log("📝 I'll analyze your product idea, ask clarification questions,");
@@ -228,7 +258,7 @@ async function interactiveSession(): Promise<void> {
     while (continueConversation) {
       console.log('\n🤔 Claude is thinking...\n');
 
-      // Get Claude's response
+      // Get Claude's response with streaming
       const result = await processClaudeInteraction(
         session.isFirstRequest
           ? productDescription
@@ -256,10 +286,8 @@ async function interactiveSession(): Promise<void> {
       );
       totalCost += batchCost;
 
-      // Display Claude's response
-      console.log('Claude:\n');
-      console.log(result.response);
-      console.log('\n' + '─'.repeat(60));
+      // Display cost information (response already streamed)
+      console.log('\n' + '─'.repeat(90));
       console.log(
         formatTokenUsage(
           result.inputTokens,
@@ -269,7 +297,7 @@ async function interactiveSession(): Promise<void> {
           batchCost
         )
       );
-      console.log('─'.repeat(60) + '\n');
+      console.log('─'.repeat(90) + '\n');
 
       session.conversationHistory.push(`Claude: ${result.response}`);
 
@@ -279,7 +307,8 @@ async function interactiveSession(): Promise<void> {
         const fs = await import('fs');
         if (fs.existsSync(docsPath)) {
           console.log('\n✅ Requirements document created: docs.md');
-          console.log('\n📊 Total Session Cost:');
+          console.log('\n' + '═'.repeat(90));
+          console.log('📊 Total Session Cost:');
           console.log(
             formatTokenUsage(
               totalInputTokens,
@@ -289,6 +318,7 @@ async function interactiveSession(): Promise<void> {
               totalCost
             )
           );
+          console.log('═'.repeat(90));
           console.log('\n🎉 Requirements gathering complete!\n');
           continueConversation = false;
           break;
@@ -308,6 +338,7 @@ async function interactiveSession(): Promise<void> {
 
       if (userResponse.toLowerCase() === 'exit') {
         console.log('\n👋 Exiting requirements gathering.\n');
+        console.log('═'.repeat(90));
         console.log('📊 Session Cost:');
         console.log(
           formatTokenUsage(
@@ -318,6 +349,7 @@ async function interactiveSession(): Promise<void> {
             totalCost
           )
         );
+        console.log('═'.repeat(90) + '\n');
         continueConversation = false;
         break;
       }

@@ -15,6 +15,7 @@ import { join } from 'path';
 import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
 import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { ReviewOptions, ReviewResult } from '../types.js';
 
 /**
@@ -186,6 +187,10 @@ export async function reviewCore(
 export async function reviewCommand(options: ReviewOptions = {}): Promise<void> {
   console.log('🔍 Starting Code Review (Git Diff)...\n');
 
+  // Initialize logging context
+  const logContext = logger.createContext('review');
+  const cleanupHandler = setupCancellationHandler(logContext);
+
   try {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -195,8 +200,14 @@ export async function reviewCommand(options: ReviewOptions = {}): Promise<void> 
     // Execute core logic (no PR support for review command)
     const result = await reviewCore(options);
 
+    // Track metrics
+    logger.trackTokens(logContext, result.tokensUsed);
+    logContext.fixesApplied = result.fixesApplied;
+
     if (result.issuesFound === 0 && result.fixesApplied === 0) {
       console.log('\n✅ Review completed - no issues found!');
+      await logger.complete(logContext, 'success');
+      cleanupHandler();
       return;
     }
 
@@ -210,8 +221,17 @@ export async function reviewCommand(options: ReviewOptions = {}): Promise<void> 
 
     console.log('\n✅ Review completed successfully!');
     console.log('ℹ️  All changes applied locally.');
+
+    // Log successful execution
+    await logger.complete(logContext, 'success');
+    cleanupHandler();
   } catch (error) {
     console.error('\n❌ Review failed:', error);
+
+    // Log failed execution
+    await logger.complete(logContext, 'error', error as Error);
+    cleanupHandler();
+
     throw error;
   }
 }

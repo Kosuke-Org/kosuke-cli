@@ -14,6 +14,7 @@ import { writeFileSync } from 'fs';
 import { resolveRepository } from '../utils/repository-resolver.js';
 import { ensureRepoReady } from '../utils/repository-manager.js';
 import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { GetCodeOptions, CodeExplorationResult } from '../types.js';
 
 /**
@@ -194,6 +195,10 @@ ${result.filesReferenced.length > 0 ? `**Files Referenced:** ${result.filesRefer
 export async function getCodeCommand(options: GetCodeOptions): Promise<void> {
   console.log('🚀 Starting Code Exploration...\n');
 
+  // Initialize logging context
+  const logContext = logger.createContext('getcode');
+  const cleanupHandler = setupCancellationHandler(logContext);
+
   try {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -202,6 +207,10 @@ export async function getCodeCommand(options: GetCodeOptions): Promise<void> {
 
     // Execute core logic
     const result = await getCodeCore(options);
+
+    // Track metrics
+    logger.trackTokens(logContext, result.tokensUsed);
+    logContext.filesModified = result.filesReferenced;
 
     // Display cost breakdown
     const costBreakdown = formatCostBreakdown({
@@ -228,8 +237,17 @@ export async function getCodeCommand(options: GetCodeOptions): Promise<void> {
     }
 
     console.log('\n✅ Code exploration completed successfully!');
+
+    // Log successful execution
+    await logger.complete(logContext, 'success');
+    cleanupHandler();
   } catch (error) {
     console.error('\n❌ Code exploration failed:', error);
+
+    // Log failed execution
+    await logger.complete(logContext, 'error', error as Error);
+    cleanupHandler();
+
     throw error;
   }
 }

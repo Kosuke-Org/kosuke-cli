@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { ensureRepoReady } from '../utils/repository-manager.js';
 import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { TicketsOptions, Ticket, TicketsResult } from '../types.js';
 
 /**
@@ -325,6 +326,10 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
 export async function ticketsCommand(options: TicketsOptions): Promise<void> {
   console.log('🎫 Starting Ticket Generation...\n');
 
+  // Initialize logging context
+  const logContext = logger.createContext('tickets');
+  const cleanupHandler = setupCancellationHandler(logContext);
+
   try {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -333,6 +338,9 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
 
     // Execute core logic
     const result = await ticketsCore(options);
+
+    // Track metrics
+    logger.trackTokens(logContext, result.tokensUsed);
 
     // Display summary
     console.log(`\n${'='.repeat(60)}`);
@@ -366,8 +374,17 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
     console.log(`💾 Tickets saved to: ${outputPath}\n`);
 
     console.log('✅ Ticket generation completed successfully!');
+
+    // Log successful execution
+    await logger.complete(logContext, 'success');
+    cleanupHandler();
   } catch (error) {
     console.error('\n❌ Ticket generation failed:', error);
+
+    // Log failed execution
+    await logger.complete(logContext, 'error', error as Error);
+    cleanupHandler();
+
     throw error;
   }
 }
