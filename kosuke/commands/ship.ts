@@ -420,11 +420,11 @@ async function reviewGitDiff(): Promise<{
  * Main ship command
  */
 export async function shipCommand(options: ShipOptions): Promise<void> {
-  const { ticket: ticketId, commit = false, pr = false } = options;
+  const { ticket: ticketId, commit = false, pr = false, noLogs = false } = options;
   console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
 
   // Initialize logging context
-  const logContext = logger.createContext('ship');
+  const logContext = logger.createContext('ship', { noLogs });
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {

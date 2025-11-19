@@ -29,17 +29,20 @@ export interface AnalyseOptions {
   baseBranch?: string;
   scope?: string;
   types?: string[];
+  noLogs?: boolean;
 }
 
 export interface LintOptions {
   pr?: boolean;
   baseBranch?: string;
+  noLogs?: boolean;
 }
 
 export interface SyncRulesOptions {
   force?: boolean;
   pr?: boolean;
   baseBranch?: string;
+  noLogs?: boolean;
 }
 
 export interface RulesAdaptation {
@@ -58,6 +61,7 @@ export interface GetCodeOptions {
   query: string; // Natural language query
   template?: boolean; // Use kosuke-template
   output?: string; // Optional: save output to file
+  noLogs?: boolean;
 }
 
 export interface RepositoryInfo {
@@ -85,6 +89,7 @@ export interface TicketsOptions {
   path?: string; // Path to requirements document (default: docs.md)
   output?: string; // Output file (default: tickets.json)
   template?: string; // Custom template repo (default: kosuke-template)
+  noLogs?: boolean;
 }
 
 export interface Ticket {
@@ -118,15 +123,16 @@ export interface ShipOptions {
   baseBranch?: string; // Base branch for PR
   ticketsFile?: string; // Path to tickets.json (default: tickets.json)
   test?: boolean; // Run tests after implementation
+  noLogs?: boolean;
 }
 
 export interface BuildOptions {
   ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  noLogs?: boolean;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface ReviewOptions {
-  // No options for now - reviews current git diff
+  noLogs?: boolean;
 }
 
 export interface ShipResult {
@@ -171,6 +177,7 @@ export interface TestOptions {
   ticketsFile?: string; // Path to tickets.json (default: tickets.json)
   pr?: boolean; // Create pull request with fixes
   baseBranch?: string; // Base branch for PR
+  noLogs?: boolean;
 }
 
 export interface TestResult {

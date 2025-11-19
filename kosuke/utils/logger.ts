@@ -75,6 +75,13 @@ interface LoggerConfig {
 }
 
 /**
+ * Runtime logger options
+ */
+interface LoggerRuntimeOptions {
+  noLogs?: boolean; // Skip API calls when true (still tracks context internally)
+}
+
+/**
  * Command execution context for automatic tracking
  */
 export interface CommandExecutionContext {
@@ -92,6 +99,7 @@ export interface CommandExecutionContext {
   testsFailed: number;
   iterations: number;
   filesModified: string[];
+  noLogs: boolean; // Skip API calls when true
 }
 
 /**
@@ -109,14 +117,14 @@ class CliLogger {
   /**
    * Load configuration from environment variables
    */
-  private loadConfig(): LoggerConfig {
+  private loadConfig(suppressWarning = false): LoggerConfig {
     const baseUrl = process.env.KOSUKE_BASE_URL || '';
     const apiKey = process.env.KOSUKE_API_KEY || '';
     const projectId = process.env.KOSUKE_PROJECT_ID || '';
 
     const enabled = !!(baseUrl && apiKey && projectId);
 
-    if (!enabled) {
+    if (!enabled && !suppressWarning) {
       console.warn(
         '⚠️  CLI logging disabled - missing KOSUKE_BASE_URL, KOSUKE_API_KEY, or KOSUKE_PROJECT_ID'
       );
@@ -205,7 +213,7 @@ class CliLogger {
   /**
    * Create a new command execution context
    */
-  createContext(command: CommandName): CommandExecutionContext {
+  createContext(command: CommandName, options: LoggerRuntimeOptions = {}): CommandExecutionContext {
     return {
       command,
       startTime: Date.now(),
@@ -221,6 +229,7 @@ class CliLogger {
       testsFailed: 0,
       iterations: 0,
       filesModified: [],
+      noLogs: options.noLogs || false,
     };
   }
 
@@ -250,7 +259,8 @@ class CliLogger {
     status: ExecutionStatus,
     error?: Error
   ): Promise<void> {
-    if (!this.config.enabled) {
+    // Skip API call if noLogs is true (but still track context internally)
+    if (context.noLogs || !this.config.enabled) {
       return;
     }
 
@@ -324,15 +334,16 @@ export const logger = new CliLogger();
  *     // Track tokens from agent results
  *     logger.trackTokens(ctx, result.tokensUsed);
  *     ctx.fixesApplied += result.fixCount;
- *   });
+ *   }, { noLogs: options.noLogs });
  * }
  * ```
  */
 export async function withCommandTracking<T>(
   command: CommandName,
-  fn: (context: CommandExecutionContext) => Promise<T>
+  fn: (context: CommandExecutionContext) => Promise<T>,
+  options: LoggerRuntimeOptions = {}
 ): Promise<T> {
-  const context = logger.createContext(command);
+  const context = logger.createContext(command, options);
 
   try {
     const result = await fn(context);

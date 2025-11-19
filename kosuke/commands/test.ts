@@ -322,11 +322,11 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
  * Main test command
  */
 export async function testCommand(options: TestOptions): Promise<void> {
-  const { ticket: ticketId, pr = false } = options;
+  const { ticket: ticketId, pr = false, noLogs = false } = options;
   console.log(`🧪 Testing Ticket: ${ticketId}\n`);
 
   // Initialize logging context
-  const logContext = logger.createContext('test');
+  const logContext = logger.createContext('test', { noLogs });
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {

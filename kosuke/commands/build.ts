@@ -92,7 +92,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       throw new Error('GITHUB_TOKEN environment variable is required for build command');
     }
 
-    const { ticketsFile = 'tickets.json' } = options;
+    const { ticketsFile = 'tickets.json', noLogs = false } = options;
     const cwd = process.cwd();
     const ticketsPath = join(cwd, ticketsFile);
 
@@ -134,6 +134,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
           commit: true,
           ticketsFile,
           test: isFrontendTicket,
+          noLogs,
         });
 
         console.log(`\n✅ ${ticket.id} completed and committed successfully\n`);

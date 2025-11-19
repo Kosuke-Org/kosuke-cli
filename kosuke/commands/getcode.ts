@@ -28,6 +28,7 @@ export function parseGetCodeArgs(args: string[]): GetCodeOptions {
   const flags = {
     template: args.includes('--template') || args.includes('-t'),
     output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
+    noLogs: args.includes('--no-logs'),
   };
 
   // Remove flags from args to get positional arguments
@@ -61,6 +62,7 @@ export function parseGetCodeArgs(args: string[]): GetCodeOptions {
     query,
     template: flags.template,
     output: flags.output,
+    noLogs: flags.noLogs,
   };
 }
 
@@ -193,10 +195,11 @@ ${result.filesReferenced.length > 0 ? `**Files Referenced:** ${result.filesRefer
  * Main getcode command
  */
 export async function getCodeCommand(options: GetCodeOptions): Promise<void> {
+  const { noLogs = false } = options;
   console.log('🚀 Starting Code Exploration...\n');
 
   // Initialize logging context
-  const logContext = logger.createContext('getcode');
+  const logContext = logger.createContext('getcode', { noLogs });
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {

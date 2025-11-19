@@ -324,10 +324,11 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
  * Main tickets command
  */
 export async function ticketsCommand(options: TicketsOptions): Promise<void> {
+  const { noLogs = false } = options;
   console.log('🎫 Starting Ticket Generation...\n');
 
   // Initialize logging context
-  const logContext = logger.createContext('tickets');
+  const logContext = logger.createContext('tickets', { noLogs });
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {

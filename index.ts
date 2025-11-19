@@ -60,6 +60,7 @@ async function main() {
           force: args.includes('--force'),
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await syncRulesCommand(options);
         break;
@@ -74,6 +75,7 @@ async function main() {
             .find((arg) => arg.startsWith('--types='))
             ?.split('=')[1]
             ?.split(','),
+          noLogs: args.includes('--no-logs'),
         };
         await analyseCommand(options);
         break;
@@ -83,6 +85,7 @@ async function main() {
         const options = {
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await lintCommand(options);
         break;
@@ -104,6 +107,7 @@ async function main() {
           path: args.find((arg) => arg.startsWith('--path='))?.split('=')[1],
           output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
           template: args.find((arg) => arg.startsWith('--template='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await ticketsCommand(options);
         break;
@@ -131,6 +135,7 @@ async function main() {
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await shipCommand(options);
         break;
@@ -139,13 +144,16 @@ async function main() {
       case 'build': {
         const options = {
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
         break;
       }
 
       case 'review': {
-        const options = {};
+        const options = {
+          noLogs: args.includes('--no-logs'),
+        };
         await reviewCommand(options);
         break;
       }
@@ -176,6 +184,7 @@ async function main() {
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
         };
         await testCommand(options);
         break;
@@ -353,6 +362,13 @@ COMMANDS:
       kosuke test --ticket=FRONTEND-1 --max-retries=5    # More attempts
       kosuke test --ticket=FRONTEND-1 --pr               # Create PR with fixes
 
+GLOBAL OPTIONS:
+
+  --no-logs           Disable logging to Kosuke API (useful when kosuke-cli is used as library)
+                      By default, logging is enabled if KOSUKE_BASE_URL, KOSUKE_API_KEY, 
+                      and KOSUKE_PROJECT_ID environment variables are set.
+                      This flag can be used with any command to prevent API logging calls.
+
 WORKFLOW:
 
   By default, all commands apply changes locally without git operations.
@@ -360,8 +376,11 @@ WORKFLOW:
 
 ENVIRONMENT VARIABLES:
 
-  ANTHROPIC_API_KEY   Required for Claude API access
-  GITHUB_TOKEN        Required when using --pr flag
+  ANTHROPIC_API_KEY     Required for Claude API access
+  GITHUB_TOKEN          Required when using --pr flag
+  KOSUKE_BASE_URL       Optional: Base URL for Kosuke API logging
+  KOSUKE_API_KEY        Optional: API key for Kosuke API logging
+  KOSUKE_PROJECT_ID     Optional: Project ID for Kosuke API logging
 
 CONFIGURATION:
 

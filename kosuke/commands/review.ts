@@ -185,10 +185,11 @@ export async function reviewCore(
  * Main review command
  */
 export async function reviewCommand(options: ReviewOptions = {}): Promise<void> {
+  const { noLogs = false } = options;
   console.log('🔍 Starting Code Review (Git Diff)...\n');
 
   // Initialize logging context
-  const logContext = logger.createContext('review');
+  const logContext = logger.createContext('review', { noLogs });
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {
