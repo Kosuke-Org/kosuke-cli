@@ -62,6 +62,8 @@
     "dotenv": "^16.4.0",
     "glob": "^10.3.0",
     "ignore": "^5.3.0",
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0",
     "simple-git": "^3.22.0"
   },
   "devDependencies": {
@@ -77,8 +79,6 @@
     "husky": "^9.1.7",
     "knip": "^5.45.3",
     "lint-staged": "^15.2.11",
-    "pixelmatch": "^5.3.0",
-    "pngjs": "^7.0.0",
     "prettier": "^3.4.2",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",

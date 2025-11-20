@@ -213,6 +213,7 @@ async function interactiveSession(): Promise<void> {
   console.log('💡 This tool will help you create comprehensive product requirements.\n');
   console.log("📝 I'll analyze your product idea, ask clarification questions,");
   console.log('   and generate a detailed docs.md file.\n');
+  console.log('✨ Tip: You can write multi-line responses. Press Enter twice to submit.\n');
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -234,9 +235,47 @@ async function interactiveSession(): Promise<void> {
 
   const askQuestion = (prompt: string): Promise<string> => {
     return new Promise((resolve) => {
-      rl.question(prompt, (answer) => {
-        resolve(answer.trim());
-      });
+      const lines: string[] = [];
+      let isFirstLine = true;
+
+      console.log('(Press Enter twice to submit, or Ctrl+D when done)\n');
+
+      const onLine = (line: string) => {
+        if (isFirstLine) {
+          isFirstLine = false;
+          if (line.trim() === '') {
+            // Empty first line, ask again
+            rl.prompt();
+            return;
+          }
+          lines.push(line);
+          rl.prompt();
+        } else if (line.trim() === '') {
+          // Empty line signals submission
+          rl.removeListener('line', onLine);
+          rl.removeListener('close', onClose);
+          const result = lines.join('\n').trim();
+          resolve(result);
+        } else {
+          lines.push(line);
+          rl.prompt();
+        }
+      };
+
+      const onClose = () => {
+        rl.removeListener('line', onLine);
+        const result = lines.join('\n').trim();
+        if (result) {
+          resolve(result);
+        } else {
+          resolve('');
+        }
+      };
+
+      rl.on('line', onLine);
+      rl.once('close', onClose);
+      rl.setPrompt('');
+      process.stdout.write(prompt);
     });
   };
 
@@ -330,7 +369,7 @@ async function interactiveSession(): Promise<void> {
       }
 
       // Ask for user response
-      console.log('💬 Your response (or type "exit" to quit):\n');
+      console.log('💬 Your response (type "exit" to quit, or press Enter twice to submit):\n');
       const userResponse = await askQuestion('You: ');
 
       if (!userResponse) {
