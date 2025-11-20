@@ -10,8 +10,8 @@
  */
 
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import * as readline from 'readline';
 import { join } from 'path';
+import * as readline from 'readline';
 import { calculateCost } from '../utils/claude-agent.js';
 
 interface RequirementsSession {
@@ -199,6 +199,9 @@ async function processClaudeInteraction(
   let cacheReadTokens = 0;
   let isFirstOutput = true;
 
+  // Track accumulated text per block index for delta calculation
+  const blockTexts: Map<number, string> = new Map();
+
   // Process the async generator with streaming
   for await (const message of responseStream) {
     if (message.type === 'user') {
@@ -207,17 +210,29 @@ async function processClaudeInteraction(
       }
     } else if (message.type === 'assistant') {
       const content = message.message.content;
-      for (const block of content) {
+
+      for (let i = 0; i < content.length; i++) {
+        const block = content[i];
+
         if (block.type === 'text') {
-          // Stream text to console in real-time
-          if (block.text) {
+          const currentText = block.text || '';
+          const previousText = blockTexts.get(i) || '';
+
+          // Calculate the delta (new text added since last message)
+          const delta = currentText.substring(previousText.length);
+
+          // Stream only the delta to console in real-time
+          if (delta) {
             if (isFirstOutput) {
-              process.stdout.write('> Claude:\n');
+              process.stdout.write('\n> Claude:\n');
               isFirstOutput = false;
             }
-            process.stdout.write(block.text);
+            process.stdout.write(delta);
           }
-          responseText += block.text;
+
+          // Update tracked text and full response
+          blockTexts.set(i, currentText);
+          responseText = currentText;
         } else if (block.type === 'tool_use') {
           // Show tool usage
           if (block.name === 'Write' || block.name === 'Edit') {
@@ -271,12 +286,6 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
     // Build the prompt (just returns the user message now - system prompt has all instructions)
     const effectivePrompt = buildRequirementsPrompt(userMessage, isFirstRequest);
 
-    // Debug: Log environment details
-    console.log('🐛 [requirementsCore] About to call query()');
-    console.log('🐛 [requirementsCore] process.env.PATH:', process.env.PATH);
-    console.log('🐛 [requirementsCore] process.execPath:', process.execPath);
-    console.log('🐛 [requirementsCore] workspaceRoot:', workspaceRoot);
-
     // Query options with custom requirements gathering system prompt
     const queryOptions: Options = {
       model: 'claude-sonnet-4-5',
@@ -286,17 +295,10 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       resume: sessionId || undefined,
       allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
       systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
-      // DON'T pass env - let SDK use its default {...process.env}
-      // The issue might be that spreading process.env creates a plain object
-      // that loses the prototype chain or some Node.js internals
     };
 
-    console.log('🐛 [requirementsCore] queryOptions:', JSON.stringify(queryOptions, null, 2));
-
     // Execute query
-    console.log('🐛 [requirementsCore] Calling query() now...');
     const responseStream = query({ prompt: effectivePrompt, options: queryOptions });
-    console.log('🐛 [requirementsCore] query() returned, starting to process stream...');
 
     let responseText = '';
     let newSessionId = sessionId || '';
@@ -306,23 +308,38 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
     let cacheReadTokens = 0;
 
     // Process the async generator with streaming
+    // Track accumulated text per block index for delta calculation
+    const blockTexts: Map<number, string> = new Map();
+
     try {
       for await (const message of responseStream) {
-        console.log('🐛 [requirementsCore] Received message type:', message.type);
-
         if (message.type === 'user') {
           if (!newSessionId) {
             newSessionId = message.session_id;
           }
         } else if (message.type === 'assistant') {
           const content = message.message.content;
-          for (const block of content) {
+
+          for (let i = 0; i < content.length; i++) {
+            const block = content[i];
+
             if (block.type === 'text') {
-              // Stream text if callback provided
-              if (block.text && onStream) {
-                onStream(block.text);
+              const currentText = block.text || '';
+              const previousText = blockTexts.get(i) || '';
+
+              // Calculate the delta (new text added since last message)
+              const delta = currentText.substring(previousText.length);
+
+              // Stream the delta if callback provided and there's new text
+              if (delta && onStream) {
+                onStream(delta);
               }
-              responseText += block.text;
+
+              // Update the tracked text for this block
+              blockTexts.set(i, currentText);
+
+              // Accumulate full response
+              responseText = currentText;
             }
           }
 
@@ -336,7 +353,6 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
         }
       }
     } catch (streamError) {
-      console.error('🐛 [requirementsCore] Error in stream processing:', streamError);
       throw streamError;
     }
 
@@ -397,7 +413,14 @@ async function interactiveSession(): Promise<void> {
   console.log('💡 This tool will help you create comprehensive product requirements.\n');
   console.log("📝 I'll analyze your product idea, ask clarification questions,");
   console.log('   and generate a detailed docs.md file.\n');
-  console.log('✨ Tip: You can write multi-line responses. Press Enter twice to submit.\n');
+  console.log('✨ Tip: Press Enter to submit, Shift+Enter for new lines.\n');
+
+  // Set up global Ctrl+C handler for the entire interactive session
+  const handleSigInt = () => {
+    console.log('\n\n👋 Exiting requirements gathering...\n');
+    process.exit(0);
+  };
+  process.on('SIGINT', handleSigInt);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -420,46 +443,119 @@ async function interactiveSession(): Promise<void> {
   const askQuestion = (prompt: string): Promise<string> => {
     return new Promise((resolve) => {
       const lines: string[] = [];
-      let isFirstLine = true;
+      let currentLine = '';
+      let escapeBuffer = '';
 
-      console.log('(Press Enter twice to submit, or Ctrl+D when done)\n');
+      console.log('(Press Enter to submit, Shift+Enter for new line, or Ctrl+C to exit)\n');
+      process.stdout.write(prompt);
 
-      const onLine = (line: string) => {
-        if (isFirstLine) {
-          isFirstLine = false;
-          if (line.trim() === '') {
-            // Empty first line, ask again
-            rl.prompt();
+      // Store original stdin state
+      const wasRaw = process.stdin.isRaw;
+
+      // Enable raw mode to capture key combinations and disable echo
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+
+      // Remove all existing listeners to prevent duplicates
+      process.stdin.removeAllListeners('data');
+
+      process.stdin.resume();
+      process.stdin.setEncoding('utf8');
+
+      const onData = (key: string) => {
+        // Handle escape sequences (for Shift+Enter and other special keys)
+        if (escapeBuffer.length > 0 || key === '\x1b') {
+          escapeBuffer += key;
+
+          // Check for Shift+Enter sequences
+          // Common sequences: \x1b[13;2~ or \x1b\r or \x1bOM
+          if (
+            escapeBuffer === '\x1b\r' ||
+            escapeBuffer === '\x1b\n' ||
+            escapeBuffer.match(/\x1b\[13;2~/)
+          ) {
+            // Shift+Enter - add new line
+            lines.push(currentLine);
+            currentLine = '';
+            process.stdout.write('\n' + ' '.repeat(prompt.length));
+            escapeBuffer = '';
             return;
           }
-          lines.push(line);
-          rl.prompt();
-        } else if (line.trim() === '') {
-          // Empty line signals submission
-          rl.removeListener('line', onLine);
-          rl.removeListener('close', onClose);
-          const result = lines.join('\n').trim();
-          resolve(result);
-        } else {
-          lines.push(line);
-          rl.prompt();
+
+          // If escape sequence is incomplete, wait for more
+          if (escapeBuffer.length < 6) {
+            return;
+          }
+
+          // Unknown escape sequence, ignore it
+          escapeBuffer = '';
+          return;
         }
+
+        // Ctrl+C
+        if (key === '\u0003') {
+          cleanup();
+          process.exit(0);
+        }
+
+        // Ctrl+D (EOF)
+        if (key === '\u0004') {
+          if (currentLine === '' && lines.length === 0) {
+            cleanup();
+            resolve('');
+            return;
+          }
+        }
+
+        // Regular Enter key (without Shift) - \r
+        if (key === '\r') {
+          // Submit the input
+          if (currentLine.length > 0) {
+            lines.push(currentLine);
+          }
+          process.stdout.write('\n');
+          cleanup();
+          resolve(lines.join('\n').trim());
+          return;
+        }
+
+        // Backspace (127 or \b)
+        if (key === '\u007f' || key === '\b' || key === '\x08') {
+          if (currentLine.length > 0) {
+            currentLine = currentLine.slice(0, -1);
+            // Move cursor back, write space, move cursor back again
+            process.stdout.write('\b \b');
+          }
+          return;
+        }
+
+        // Tab - insert 2 spaces
+        if (key === '\t') {
+          currentLine += '  ';
+          process.stdout.write('  ');
+          return;
+        }
+
+        // Ignore other control characters (except printable ones)
+        if (key.charCodeAt(0) < 32) {
+          return;
+        }
+
+        // Regular character
+        currentLine += key;
+        process.stdout.write(key);
       };
 
-      const onClose = () => {
-        rl.removeListener('line', onLine);
-        const result = lines.join('\n').trim();
-        if (result) {
-          resolve(result);
-        } else {
-          resolve('');
+      const cleanup = () => {
+        process.stdin.removeListener('data', onData);
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(wasRaw || false);
         }
+        process.stdin.pause();
       };
 
-      rl.on('line', onLine);
-      rl.once('close', onClose);
-      rl.setPrompt('');
-      process.stdout.write(prompt);
+      process.stdin.on('data', onData);
     });
   };
 
@@ -553,7 +649,7 @@ async function interactiveSession(): Promise<void> {
       }
 
       // Ask for user response
-      console.log('💬 Your response (type "exit" to quit, or press Enter twice to submit):\n');
+      console.log('💬 Your response (type "exit" to quit):\n');
       const userResponse = await askQuestion('You: ');
 
       if (!userResponse) {
@@ -585,6 +681,8 @@ async function interactiveSession(): Promise<void> {
     console.error('\n❌ Error during requirements gathering:', error);
     throw error;
   } finally {
+    // Clean up signal handler
+    process.removeListener('SIGINT', handleSigInt);
     rl.close();
   }
 }
