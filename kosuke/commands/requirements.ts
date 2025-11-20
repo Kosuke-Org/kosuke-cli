@@ -50,24 +50,16 @@ export interface RequirementsResult {
 }
 
 /**
- * Build the effective prompt for requirements gathering
+ * Custom system prompt for requirements gathering
  */
-function buildRequirementsPrompt(userMessage: string, isFirstRequest: boolean): string {
-  if (!isFirstRequest) {
-    return userMessage;
-  }
+const REQUIREMENTS_SYSTEM_PROMPT = `You are an expert product requirements analyst specializing in web applications.
 
-  return `${userMessage}
+**YOUR PRIMARY OBJECTIVE:** Create a comprehensive \`docs.md\` file that the user will review before implementation begins. This document must contain ALL requirements needed for developers to build the product.
 
-IMPORTANT INSTRUCTIONS FOR FIRST REQUEST:
-This is a web application product implementation request. You MUST follow this workflow:
+**Your Workflow:**
 
-1. **Analyze the Request**: Understand what product needs to be built
-2. **List Core Functionalities**: Present all features in clear bullet points
-3. **Design Interface & Wireframes**: Create visual structure of pages and components
-4. **Ask NUMBERED Clarification Questions**: List any ambiguities or missing requirements with numbers
+1. **Initial Analysis (First User Request)**: When a user describes a product idea, analyze it carefully and present your understanding in this EXACT format:
 
-Format your response as:
 ---
 ## Product Description
 [Brief description of what will be built - the core concept and purpose]
@@ -79,7 +71,7 @@ Format your response as:
 ...
 
 ## Interface & Design
-Present the application structure as a visual wireframe using markdown. For each page/screen:
+Present the application structure as visual wireframes using markdown. For each page/screen:
 
 ### [Page Name]
 \`\`\`
@@ -102,23 +94,49 @@ Present the application structure as a visual wireframe using markdown. For each
 - Data displayed
 
 ## Clarification Questions
-1. [Question 1]
-2. [Question 2]
-3. [Question 3]
+1. [Question 1 - be specific]
+2. [Question 2 - be specific]
+3. [Question 3 - be specific]
 ...
-
 ---
 
-WORKFLOW AFTER USER ANSWERS QUESTIONS:
-When the user has answered all questions and requirements are clear, create a comprehensive requirements document in docs.md with:
-   - Product Overview
-   - Core Functionalities (detailed)
-   - Interface & Design (with wireframes)
-   - Technical Architecture
-   - User Flows
-   - Database Schema
-   - API Endpoints
-   - Implementation Notes`;
+2. **Iterative Refinement**: As the user answers questions:
+   - Acknowledge their answers
+   - Update your understanding based on new information
+   - Ask follow-up questions for any remaining ambiguities
+   - Continue the conversation until EVERYTHING is crystal clear
+
+3. **Final Deliverable - docs.md**: Once ALL questions are answered and requirements are 100% clear, create the \`docs.md\` file. This is the FINAL DELIVERABLE that the user will review before implementation begins.
+
+**docs.md MUST contain:**
+   - **Product Overview** - High-level description and goals
+   - **Core Functionalities** - Detailed feature descriptions
+   - **Interface & Design** - ASCII wireframes for ALL major pages/screens
+   - **Technical Architecture** - Tech stack, folder structure, key libraries
+   - **User Flows** - Step-by-step user journeys for key features
+   - **Database Schema** - Tables, fields, relationships, data types
+   - **API Endpoints** - Routes, methods, request/response formats (if applicable)
+   - **Business Logic** - Key algorithms, calculations, rules
+   - **Implementation Notes** - Important technical considerations
+
+**Critical Rules:**
+- NEVER start implementation - you only gather requirements
+- NEVER create docs.md until ALL clarification questions are answered
+- ALWAYS ask specific, numbered questions for anything unclear
+- ALWAYS create comprehensive ASCII wireframes to visualize interfaces
+- Focus on WHAT the product should do, not HOW to code it
+- Be conversational and help the user think through edge cases
+- The docs.md file is your SUCCESS CRITERIA - make it comprehensive and clear
+
+**Success = User reviews docs.md and says "Yes, this is exactly what I want to build"**`;
+
+/**
+ * Build the effective prompt for requirements gathering
+ * Just returns the user message - all instructions are in the system prompt
+ */
+function buildRequirementsPrompt(userMessage: string, _isFirstRequest: boolean): string {
+  // System prompt contains all instructions, so just return the user message
+  return userMessage;
 }
 
 /**
@@ -158,15 +176,8 @@ async function processClaudeInteraction(
 }> {
   const workspaceRoot = process.cwd();
 
-  // Build the effective prompt
-  let effectivePrompt = buildRequirementsPrompt(userInput, isFirstRequest);
-
-  // Add interactive conversation note for first request
-  if (isFirstRequest) {
-    effectivePrompt += `
-
-IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT for the user's response. The conversation continues - do NOT stop the chat loop.`;
-  }
+  // Build the effective prompt (just returns the user message now)
+  const effectivePrompt = buildRequirementsPrompt(userInput, isFirstRequest);
 
   const options: Options = {
     model: 'claude-sonnet-4-5',
@@ -175,10 +186,7 @@ IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT fo
     permissionMode: 'acceptEdits',
     resume: sessionId || undefined,
     allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code',
-    },
+    systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
   };
 
   const responseStream = query({ prompt: effectivePrompt, options });
@@ -260,10 +268,16 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
 
-    // Build the prompt using shared function
+    // Build the prompt (just returns the user message now - system prompt has all instructions)
     const effectivePrompt = buildRequirementsPrompt(userMessage, isFirstRequest);
 
-    // Query options
+    // Debug: Log environment details
+    console.log('🐛 [requirementsCore] About to call query()');
+    console.log('🐛 [requirementsCore] process.env.PATH:', process.env.PATH);
+    console.log('🐛 [requirementsCore] process.execPath:', process.execPath);
+    console.log('🐛 [requirementsCore] workspaceRoot:', workspaceRoot);
+
+    // Query options with custom requirements gathering system prompt
     const queryOptions: Options = {
       model: 'claude-sonnet-4-5',
       maxTurns: 20,
@@ -271,14 +285,18 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       permissionMode: 'acceptEdits',
       resume: sessionId || undefined,
       allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
-      systemPrompt: {
-        type: 'preset',
-        preset: 'claude_code',
-      },
+      systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
+      // DON'T pass env - let SDK use its default {...process.env}
+      // The issue might be that spreading process.env creates a plain object
+      // that loses the prototype chain or some Node.js internals
     };
 
+    console.log('🐛 [requirementsCore] queryOptions:', JSON.stringify(queryOptions, null, 2));
+
     // Execute query
+    console.log('🐛 [requirementsCore] Calling query() now...');
     const responseStream = query({ prompt: effectivePrompt, options: queryOptions });
+    console.log('🐛 [requirementsCore] query() returned, starting to process stream...');
 
     let responseText = '';
     let newSessionId = sessionId || '';
@@ -288,31 +306,38 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
     let cacheReadTokens = 0;
 
     // Process the async generator with streaming
-    for await (const message of responseStream) {
-      if (message.type === 'user') {
-        if (!newSessionId) {
-          newSessionId = message.session_id;
-        }
-      } else if (message.type === 'assistant') {
-        const content = message.message.content;
-        for (const block of content) {
-          if (block.type === 'text') {
-            // Stream text if callback provided
-            if (block.text && onStream) {
-              onStream(block.text);
+    try {
+      for await (const message of responseStream) {
+        console.log('🐛 [requirementsCore] Received message type:', message.type);
+
+        if (message.type === 'user') {
+          if (!newSessionId) {
+            newSessionId = message.session_id;
+          }
+        } else if (message.type === 'assistant') {
+          const content = message.message.content;
+          for (const block of content) {
+            if (block.type === 'text') {
+              // Stream text if callback provided
+              if (block.text && onStream) {
+                onStream(block.text);
+              }
+              responseText += block.text;
             }
-            responseText += block.text;
+          }
+
+          // Track token usage
+          if (message.message.usage) {
+            inputTokens += message.message.usage.input_tokens || 0;
+            outputTokens += message.message.usage.output_tokens || 0;
+            cacheCreationTokens += message.message.usage.cache_creation_input_tokens || 0;
+            cacheReadTokens += message.message.usage.cache_read_input_tokens || 0;
           }
         }
-
-        // Track token usage
-        if (message.message.usage) {
-          inputTokens += message.message.usage.input_tokens || 0;
-          outputTokens += message.message.usage.output_tokens || 0;
-          cacheCreationTokens += message.message.usage.cache_creation_input_tokens || 0;
-          cacheReadTokens += message.message.usage.cache_read_input_tokens || 0;
-        }
       }
+    } catch (streamError) {
+      console.error('🐛 [requirementsCore] Error in stream processing:', streamError);
+      throw streamError;
     }
 
     // Check if docs.md was created
