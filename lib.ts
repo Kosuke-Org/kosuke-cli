@@ -41,6 +41,8 @@
  * ```
  */
 
+import packageJson from './package.json';
+
 // Re-export commands
 export { analyseCommand } from './kosuke/commands/analyse.js';
 export { lintCommand, fixCodeQualityErrors, fixLintErrors } from './kosuke/commands/lint.js';
@@ -112,4 +114,6 @@ export type {
 export type { ValidationResult } from './kosuke/utils/validator.js';
 export type { AgentVerbosity, AgentConfig, AgentResult } from './kosuke/utils/claude-agent.js';
 export type { RequirementsOptions, RequirementsResult } from './kosuke/commands/requirements.js';
-export const version = '0.0.17';
+
+// Export version from package.json
+export const version = packageJson.version;
