@@ -21,47 +21,43 @@ interface RequirementsSession {
 }
 
 /**
- * Format token usage for display
+ * Options for programmatic requirements gathering
  */
-function formatTokenUsage(
-  inputTokens: number,
-  outputTokens: number,
-  cacheCreationTokens: number,
-  cacheReadTokens: number,
-  cost: number
-): string {
-  const breakdown = [];
-  if (inputTokens > 0) breakdown.push(`${inputTokens.toLocaleString()} input`);
-  if (outputTokens > 0) breakdown.push(`${outputTokens.toLocaleString()} output`);
-  if (cacheCreationTokens > 0)
-    breakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
-  if (cacheReadTokens > 0) breakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
-
-  return `💰 Cost: $${cost.toFixed(4)} (${breakdown.join(' + ')} tokens)`;
+export interface RequirementsOptions {
+  workspaceRoot: string;
+  userMessage: string;
+  sessionId?: string | null;
+  isFirstRequest?: boolean;
+  onStream?: (text: string) => void;
 }
 
 /**
- * Process a single Claude interaction with streaming support
+ * Result from programmatic requirements gathering
  */
-async function processClaudeInteraction(
-  userInput: string,
-  sessionId: string | null,
-  isFirstRequest: boolean
-): Promise<{
+export interface RequirementsResult {
+  success: boolean;
   response: string;
   sessionId: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-}> {
-  const workspaceRoot = process.cwd();
+  docsCreated: boolean;
+  docsContent?: string;
+  tokenUsage: {
+    input: number;
+    output: number;
+    cacheCreation: number;
+    cacheRead: number;
+  };
+  error?: string;
+}
 
-  // Modify the prompt for the first request to enforce planning workflow
-  let effectivePrompt = userInput;
+/**
+ * Build the effective prompt for requirements gathering
+ */
+function buildRequirementsPrompt(userMessage: string, isFirstRequest: boolean): string {
+  if (!isFirstRequest) {
+    return userMessage;
+  }
 
-  if (isFirstRequest) {
-    effectivePrompt = `${userInput}
+  return `${userMessage}
 
 IMPORTANT INSTRUCTIONS FOR FIRST REQUEST:
 This is a web application product implementation request. You MUST follow this workflow:
@@ -122,7 +118,52 @@ When the user has answered all questions and requirements are clear, create a co
    - User Flows
    - Database Schema
    - API Endpoints
-   - Implementation Notes
+   - Implementation Notes`;
+}
+
+/**
+ * Format token usage for display
+ */
+function formatTokenUsage(
+  inputTokens: number,
+  outputTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+  cost: number
+): string {
+  const breakdown = [];
+  if (inputTokens > 0) breakdown.push(`${inputTokens.toLocaleString()} input`);
+  if (outputTokens > 0) breakdown.push(`${outputTokens.toLocaleString()} output`);
+  if (cacheCreationTokens > 0)
+    breakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
+  if (cacheReadTokens > 0) breakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
+
+  return `💰 Cost: $${cost.toFixed(4)} (${breakdown.join(' + ')} tokens)`;
+}
+
+/**
+ * Process a single Claude interaction with streaming support
+ */
+async function processClaudeInteraction(
+  userInput: string,
+  sessionId: string | null,
+  isFirstRequest: boolean
+): Promise<{
+  response: string;
+  sessionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+}> {
+  const workspaceRoot = process.cwd();
+
+  // Build the effective prompt
+  let effectivePrompt = buildRequirementsPrompt(userInput, isFirstRequest);
+
+  // Add interactive conversation note for first request
+  if (isFirstRequest) {
+    effectivePrompt += `
 
 IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT for the user's response. The conversation continues - do NOT stop the chat loop.`;
   }
@@ -198,6 +239,124 @@ IMPORTANT: This is an INTERACTIVE conversation. After showing this plan, WAIT fo
     cacheCreationTokens,
     cacheReadTokens,
   };
+}
+
+/**
+ * Core requirements gathering function for programmatic use
+ * This is the non-interactive API that can be used by kosuke-core
+ */
+export async function requirementsCore(options: RequirementsOptions): Promise<RequirementsResult> {
+  const {
+    workspaceRoot,
+    userMessage,
+    sessionId = null,
+    isFirstRequest = false,
+    onStream,
+  } = options;
+
+  try {
+    // Validate API key
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY environment variable is required');
+    }
+
+    // Build the prompt using shared function
+    const effectivePrompt = buildRequirementsPrompt(userMessage, isFirstRequest);
+
+    // Query options
+    const queryOptions: Options = {
+      model: 'claude-sonnet-4-5',
+      maxTurns: 20,
+      cwd: workspaceRoot,
+      permissionMode: 'acceptEdits',
+      resume: sessionId || undefined,
+      allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+      },
+    };
+
+    // Execute query
+    const responseStream = query({ prompt: effectivePrompt, options: queryOptions });
+
+    let responseText = '';
+    let newSessionId = sessionId || '';
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+
+    // Process the async generator with streaming
+    for await (const message of responseStream) {
+      if (message.type === 'user') {
+        if (!newSessionId) {
+          newSessionId = message.session_id;
+        }
+      } else if (message.type === 'assistant') {
+        const content = message.message.content;
+        for (const block of content) {
+          if (block.type === 'text') {
+            // Stream text if callback provided
+            if (block.text && onStream) {
+              onStream(block.text);
+            }
+            responseText += block.text;
+          }
+        }
+
+        // Track token usage
+        if (message.message.usage) {
+          inputTokens += message.message.usage.input_tokens || 0;
+          outputTokens += message.message.usage.output_tokens || 0;
+          cacheCreationTokens += message.message.usage.cache_creation_input_tokens || 0;
+          cacheReadTokens += message.message.usage.cache_read_input_tokens || 0;
+        }
+      }
+    }
+
+    // Check if docs.md was created
+    let docsCreated = false;
+    let docsContent: string | undefined;
+    const docsPath = join(workspaceRoot, 'docs.md');
+
+    try {
+      const fs = await import('fs/promises');
+      docsContent = await fs.readFile(docsPath, 'utf-8');
+      docsCreated = true;
+    } catch {
+      // docs.md not yet created
+      docsCreated = false;
+    }
+
+    return {
+      success: true,
+      response: responseText,
+      sessionId: newSessionId,
+      docsCreated,
+      docsContent,
+      tokenUsage: {
+        input: inputTokens,
+        output: outputTokens,
+        cacheCreation: cacheCreationTokens,
+        cacheRead: cacheReadTokens,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      response: '',
+      sessionId: sessionId || '',
+      docsCreated: false,
+      tokenUsage: {
+        input: 0,
+        output: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+      },
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+    };
+  }
 }
 
 /**

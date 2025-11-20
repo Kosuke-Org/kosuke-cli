@@ -45,7 +45,7 @@
 export { analyseCommand } from './kosuke/commands/analyse.js';
 export { lintCommand, fixCodeQualityErrors, fixLintErrors } from './kosuke/commands/lint.js';
 export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
-export { requirementsCommand } from './kosuke/commands/requirements.js';
+export { requirementsCommand, requirementsCore } from './kosuke/commands/requirements.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCommand, shipCore } from './kosuke/commands/ship.js';
@@ -111,3 +111,5 @@ export type {
 
 export type { ValidationResult } from './kosuke/utils/validator.js';
 export type { AgentVerbosity, AgentConfig, AgentResult } from './kosuke/utils/claude-agent.js';
+export type { RequirementsOptions, RequirementsResult } from './kosuke/commands/requirements.js';
+export const version = '0.0.17';
