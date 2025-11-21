@@ -292,10 +292,13 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       maxTurns: 20,
       cwd: workspaceRoot,
       permissionMode: 'acceptEdits',
-      resume: sessionId || undefined,
+      resume: sessionId || undefined, // Resume previous session if sessionId provided
       allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
       systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
     };
+
+    console.log(`📋 [RequirementsCore] Starting query with session: ${sessionId || 'NEW'}`);
+    console.log(`📋 [RequirementsCore] Is first request: ${isFirstRequest}`);
 
     // Execute query
     const responseStream = query({ prompt: effectivePrompt, options: queryOptions });
@@ -316,6 +319,7 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
         if (message.type === 'user') {
           if (!newSessionId) {
             newSessionId = message.session_id;
+            console.log(`🆔 [RequirementsCore] Captured new session ID: ${newSessionId}`);
           }
         } else if (message.type === 'assistant') {
           const content = message.message.content;
@@ -369,6 +373,9 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       // docs.md not yet created
       docsCreated = false;
     }
+
+    console.log(`✅ [RequirementsCore] Returning session ID: ${newSessionId}`);
+    console.log(`✅ [RequirementsCore] Docs created: ${docsCreated}`);
 
     return {
       success: true,
