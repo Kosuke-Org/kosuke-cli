@@ -14,6 +14,15 @@ import { join } from 'path';
 import * as readline from 'readline';
 import { calculateCost } from '../utils/claude-agent.js';
 
+/**
+ * Extended message types for Claude SDK with session_id support
+ */
+interface MessageWithSessionId {
+  session_id?: string;
+  subtype?: string;
+  [key: string]: unknown;
+}
+
 interface RequirementsSession {
   productDescription: string;
   conversationHistory: string[];
@@ -93,17 +102,32 @@ Present the application structure as visual wireframes using markdown. For each 
 - User interactions
 - Data displayed
 
-## Clarification Questions
-1. [Question 1 - be specific]
-2. [Question 2 - be specific]
-3. [Question 3 - be specific]
+## Clarification Questions & MVP Recommendations
+
+For each clarification needed, provide BOTH a question AND a recommended approach for MVP:
+
+1. **[Question topic]**
+   - Question: [Specific question]
+   - 💡 MVP Recommendation: [Simple, practical approach that reduces scope]
+
+2. **[Question topic]**
+   - Question: [Specific question]
+   - 💡 MVP Recommendation: [Simple, practical approach that reduces scope]
+
+3. **[Question topic]**
+   - Question: [Specific question]
+   - 💡 MVP Recommendation: [Simple, practical approach that reduces scope]
+
 ...
+
+**Quick Response Option:** The user can reply "go for recommendations" or "use recommendations" to accept all MVP recommendations at once.
 ---
 
 2. **Iterative Refinement**: As the user answers questions:
-   - Acknowledge their answers
-   - Update your understanding based on new information
-   - Ask follow-up questions for any remaining ambiguities
+   - If user says "go for recommendations" or "use recommendations", immediately accept ALL MVP recommendations and proceed to creating docs.md
+   - If user provides specific answers, acknowledge them and update your understanding
+   - Ask follow-up questions ONLY for remaining ambiguities
+   - Always prioritize simplicity and MVP scope
    - Continue the conversation until EVERYTHING is crystal clear
 
 3. **Final Deliverable - docs.md**: Once ALL questions are answered and requirements are 100% clear, create the \`docs.md\` file. This is the FINAL DELIVERABLE that the user will review before implementation begins.
@@ -121,11 +145,14 @@ Present the application structure as visual wireframes using markdown. For each 
 
 **Critical Rules:**
 - NEVER start implementation - you only gather requirements
-- NEVER create docs.md until ALL clarification questions are answered
-- ALWAYS ask specific, numbered questions for anything unclear
+- NEVER create docs.md until ALL clarification questions are answered (or user accepts recommendations)
+- ALWAYS provide both questions AND MVP recommendations for each clarification point
+- MVP recommendations should simplify scope, reduce complexity, and focus on core features
+- If user says "go for recommendations" or similar, immediately accept ALL recommendations and create docs.md
 - ALWAYS create comprehensive ASCII wireframes to visualize interfaces
 - Focus on WHAT the product should do, not HOW to code it
 - Be conversational and help the user think through edge cases
+- Bias towards simplicity - this is an MVP, not a full-featured product
 - The docs.md file is your SUCCESS CRITERIA - make it comprehensive and clear
 
 **Success = User reviews docs.md and says "Yes, this is exactly what I want to build"**`;
@@ -204,11 +231,22 @@ async function processClaudeInteraction(
 
   // Process the async generator with streaming
   for await (const message of responseStream) {
-    if (message.type === 'user') {
+    // Capture session ID from system init message
+    if (message.type === 'system' && message.subtype === 'init') {
       if (!newSessionId) {
         newSessionId = message.session_id;
+        console.log(`\n🆔 Session ID captured from system init: ${newSessionId}\n`);
       }
-    } else if (message.type === 'assistant') {
+    }
+
+    // Also try capturing from ANY message that has a session_id
+    const messageWithId = message as MessageWithSessionId;
+    if (!newSessionId && messageWithId.session_id) {
+      newSessionId = messageWithId.session_id;
+      console.log(`\n🆔 Session ID captured from ${message.type} message: ${newSessionId}\n`);
+    }
+
+    if (message.type === 'assistant') {
       const content = message.message.content;
 
       for (let i = 0; i < content.length; i++) {
@@ -316,12 +354,42 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
 
     try {
       for await (const message of responseStream) {
-        if (message.type === 'user') {
+        // Debug: Log ALL message details to understand stream structure
+        const messageWithId = message as MessageWithSessionId;
+        console.log(
+          `📨 [RequirementsCore] Message received:`,
+          JSON.stringify(
+            {
+              type: message.type,
+              subtype: messageWithId.subtype,
+              hasSessionId: !!messageWithId.session_id,
+              sessionIdValue: messageWithId.session_id || 'N/A',
+              keys: Object.keys(message),
+            },
+            null,
+            2
+          )
+        );
+
+        // Capture session ID from system init message (first message in stream)
+        if (message.type === 'system' && message.subtype === 'init') {
           if (!newSessionId) {
             newSessionId = message.session_id;
-            console.log(`🆔 [RequirementsCore] Captured new session ID: ${newSessionId}`);
+            console.log(
+              `🆔 [RequirementsCore] Captured new session ID from system init: ${newSessionId}`
+            );
           }
-        } else if (message.type === 'assistant') {
+        }
+
+        // Also try capturing from ANY message that has a session_id
+        if (!newSessionId && messageWithId.session_id) {
+          newSessionId = messageWithId.session_id;
+          console.log(
+            `🆔 [RequirementsCore] Captured session ID from ${message.type} message: ${newSessionId}`
+          );
+        }
+
+        if (message.type === 'assistant') {
           const content = message.message.content;
 
           for (let i = 0; i < content.length; i++) {
