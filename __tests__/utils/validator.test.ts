@@ -155,7 +155,7 @@ describe('validator utilities', () => {
           scripts: { format: 'prettier --write .' },
         })
       );
-      mockExecSync.mockReturnValue('success output' as unknown as Buffer);
+      mockExecSync.mockReturnValue('success output');
 
       const { runFormat } = await import('@/kosuke/utils/validator');
       const result = await runFormat();
@@ -221,7 +221,7 @@ describe('validator utilities', () => {
           scripts: { lint: 'eslint .' },
         })
       );
-      mockExecSync.mockReturnValue('success output' as unknown as Buffer);
+      mockExecSync.mockReturnValue('success output');
 
       const { runLint } = await import('@/kosuke/utils/validator');
       const result = await runLint();

@@ -17,7 +17,7 @@ describe('discoverFiles', () => {
     const files = await discoverFiles();
 
     // Should find at least some .ts files
-    const tsFiles = files.filter((f) => f.endsWith('.ts'));
+    const tsFiles = files.filter((f: string) => f.endsWith('.ts'));
     expect(tsFiles.length).toBeGreaterThan(0);
   });
 
@@ -25,28 +25,28 @@ describe('discoverFiles', () => {
     const files = await discoverFiles({ types: ['ts'] });
 
     // All files should be .ts files
-    expect(files.every((f) => f.endsWith('.ts'))).toBe(true);
+    expect(files.every((f: string) => f.endsWith('.ts'))).toBe(true);
   });
 
   it('should filter out node_modules', async () => {
     const files = await discoverFiles();
 
     // Should not include any files from node_modules
-    expect(files.some((f) => f.includes('node_modules'))).toBe(false);
+    expect(files.some((f: string) => f.includes('node_modules'))).toBe(false);
   });
 
   it('should filter out dist directory', async () => {
     const files = await discoverFiles();
 
     // Should not include any files from dist
-    expect(files.some((f) => f.includes('dist/'))).toBe(false);
+    expect(files.some((f: string) => f.includes('dist/'))).toBe(false);
   });
 
   it('should support scope filtering', async () => {
     const files = await discoverFiles({ scope: 'kosuke' });
 
     // All files should be under kosuke directory
-    expect(files.every((f) => f.startsWith('kosuke/'))).toBe(true);
+    expect(files.every((f: string) => f.startsWith('kosuke/'))).toBe(true);
   });
 
   it('should return unique files', async () => {

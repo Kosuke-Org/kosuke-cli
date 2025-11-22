@@ -18,27 +18,27 @@ describe('logger', () => {
 
   describe('calculateCost', () => {
     it('should calculate cost correctly with input and output tokens only', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(1_000_000, 1_000_000);
       // $3 (input) + $15 (output) = $18
       expect(cost).toBe('18.000000');
     });
 
     it('should calculate cost correctly with cache tokens', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(1_000_000, 1_000_000, 1_000_000, 1_000_000);
       // $3 (input) + $15 (output) + $3.75 (cache write) + $0.30 (cache read) = $22.05
       expect(cost).toBe('22.050000');
     });
 
     it('should handle zero tokens', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(0, 0, 0, 0);
       expect(cost).toBe('0.000000');
     });
 
     it('should handle small token amounts', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(1000, 500);
       // (1000/1M * $3) + (500/1M * $15) = $0.003 + $0.0075 = $0.0105
       expect(cost).toBe('0.010500');
@@ -47,7 +47,7 @@ describe('logger', () => {
 
   describe('createContext', () => {
     it('should create a new context with correct initial values', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
 
       expect(context.command).toBe('ship');
@@ -67,7 +67,7 @@ describe('logger', () => {
     });
 
     it('should support all command types', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const commands = ['ship', 'test', 'review', 'getcode', 'tickets'] as const;
 
       commands.forEach((command) => {
@@ -79,7 +79,7 @@ describe('logger', () => {
 
   describe('trackTokens', () => {
     it('should accumulate token usage', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
 
       logger.trackTokens(context, {
@@ -143,7 +143,7 @@ describe('logger', () => {
       vi.stubEnv('KOSUKE_PROJECT_ID', '');
 
       // Import logger with no env vars
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
 
       const context = logger.getProjectContext();
       expect(context).toBeNull();
@@ -169,7 +169,7 @@ describe('logger', () => {
       vi.stubEnv('KOSUKE_API_KEY', '');
       vi.stubEnv('KOSUKE_PROJECT_ID', '');
 
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
       await expect(logger.complete(context, 'success')).resolves.not.toThrow();
     });
@@ -182,7 +182,7 @@ describe('logger', () => {
       // Mock fetch to throw an error
       global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
       await expect(logger.complete(context, 'success')).resolves.not.toThrow();
     });
@@ -190,21 +190,21 @@ describe('logger', () => {
 
   describe('cost calculation edge cases', () => {
     it('should handle very large token counts', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(100_000_000, 50_000_000);
       // (100M/1M * $3) + (50M/1M * $15) = $300 + $750 = $1050
       expect(cost).toBe('1050.000000');
     });
 
     it('should format decimals correctly', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(333, 666);
       // Should have exactly 6 decimal places
       expect(cost).toMatch(/^\d+\.\d{6}$/);
     });
 
     it('should handle fractional token costs', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const cost = logger.calculateCost(1, 1, 1, 1);
       // Very small amounts should still be calculated
       const numericCost = parseFloat(cost);
@@ -215,7 +215,7 @@ describe('logger', () => {
 
   describe('context mutation', () => {
     it('should allow direct mutation of context fields', async () => {
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('test');
 
       context.testsRun = 10;
@@ -246,7 +246,7 @@ describe('logger', () => {
         json: async () => ({}),
       });
 
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
       const startTime = Date.now();
 
@@ -267,7 +267,7 @@ describe('logger', () => {
       // Mock fetch to throw an error
       global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
       const error = new Error('Test error message');
 
@@ -285,7 +285,7 @@ describe('logger', () => {
         json: async () => ({}),
       });
 
-      const { logger } = await import('@/kosuke/utils/logger.js');
+      const { logger } = await import('@/kosuke/utils/logger');
       const context = logger.createContext('ship');
 
       await expect(logger.complete(context, 'cancelled')).resolves.not.toThrow();
