@@ -7,27 +7,17 @@
  * - Claude asks clarification questions
  * - User answers questions (iterative until clear)
  * - Generate docs.md with complete requirements
+ *
+ * Implementation: Uses Anthropic SDK directly with two custom tools:
+ * - write_docs: Create new docs.md file
+ * - edit_docs: Update existing docs.md file
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import Anthropic from '@anthropic-ai/sdk';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import * as readline from 'readline';
 import { calculateCost } from '../utils/claude-agent.js';
-
-/**
- * Extended message types for Claude SDK with session_id support
- */
-interface MessageWithSessionId {
-  session_id?: string;
-  subtype?: string;
-  [key: string]: unknown;
-}
-
-interface RequirementsSession {
-  productDescription: string;
-  conversationHistory: string[];
-  isFirstRequest: boolean;
-}
 
 /**
  * Options for programmatic requirements gathering
@@ -35,7 +25,7 @@ interface RequirementsSession {
 export interface RequirementsOptions {
   workspaceRoot: string;
   userMessage: string;
-  sessionId?: string | null;
+  previousMessages?: Anthropic.MessageParam[];
   isFirstRequest?: boolean;
   onStream?: (text: string) => void;
 }
@@ -46,7 +36,7 @@ export interface RequirementsOptions {
 export interface RequirementsResult {
   success: boolean;
   response: string;
-  sessionId: string;
+  messages: Anthropic.MessageParam[]; // Full message history for session continuity
   docsCreated: boolean;
   docsContent?: string;
   tokenUsage: {
@@ -57,6 +47,52 @@ export interface RequirementsResult {
   };
   error?: string;
 }
+
+/**
+ * Session state for interactive mode
+ */
+interface RequirementsSession {
+  productDescription: string;
+  messages: Anthropic.MessageParam[];
+  isFirstRequest: boolean;
+}
+
+/**
+ * Tool definitions for docs.md management
+ */
+const REQUIREMENTS_TOOLS: Anthropic.Tool[] = [
+  {
+    name: 'write_docs',
+    description:
+      'Create a new docs.md file with comprehensive product requirements. Use this when creating the initial requirements document.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description:
+            'Full markdown content for docs.md including all sections: Product Description (high-level overview and purpose), Core Functionalities (detailed feature descriptions), and Interface & Design (ASCII wireframes for all major pages/screens with component descriptions and user interactions). Do NOT include technical implementation details like database schemas, API endpoints, or code architecture.',
+        },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'edit_docs',
+    description:
+      'Update an existing docs.md file with revised requirements. Use this when making changes to an existing requirements document.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'Full updated markdown content for docs.md with all revisions incorporated.',
+        },
+      },
+      required: ['content'],
+    },
+  },
+];
 
 /**
  * Custom system prompt for requirements gathering
@@ -130,18 +166,12 @@ For each clarification needed, provide BOTH a question AND a recommended approac
    - Always prioritize simplicity and MVP scope
    - Continue the conversation until EVERYTHING is crystal clear
 
-3. **Final Deliverable - docs.md**: Once ALL questions are answered and requirements are 100% clear, create the \`docs.md\` file. This is the FINAL DELIVERABLE that the user will review before implementation begins.
+3. **Final Deliverable - docs.md**: Once ALL questions are answered and requirements are 100% clear, use the \`write_docs\` tool to create the \`docs.md\` file. This is the FINAL DELIVERABLE that the user will review before implementation begins.
 
 **docs.md MUST contain:**
-   - **Product Overview** - High-level description and goals
-   - **Core Functionalities** - Detailed feature descriptions
-   - **Interface & Design** - ASCII wireframes for ALL major pages/screens
-   - **Technical Architecture** - Tech stack, folder structure, key libraries
-   - **User Flows** - Step-by-step user journeys for key features
-   - **Database Schema** - Tables, fields, relationships, data types
-   - **API Endpoints** - Routes, methods, request/response formats (if applicable)
-   - **Business Logic** - Key algorithms, calculations, rules
-   - **Implementation Notes** - Important technical considerations
+   - **Product Description** - High-level description of what will be built, the core concept and purpose
+   - **Core Functionalities** - Detailed feature descriptions (what the product should do)
+   - **Interface & Design** - ASCII wireframes for ALL major pages/screens with component descriptions and user interactions
 
 **Critical Rules:**
 - NEVER start implementation - you only gather requirements
@@ -153,17 +183,43 @@ For each clarification needed, provide BOTH a question AND a recommended approac
 - Focus on WHAT the product should do, not HOW to code it
 - Be conversational and help the user think through edge cases
 - Bias towards simplicity - this is an MVP, not a full-featured product
+- Use the \`write_docs\` tool when creating the initial docs.md file
+- Use the \`edit_docs\` tool if you need to update docs.md after user feedback
 - The docs.md file is your SUCCESS CRITERIA - make it comprehensive and clear
+- NEVER include technical implementation details (database schemas, API endpoints, code architecture, tech stack) in docs.md
+- Keep docs.md focused on user-facing features, functionality, and interface design only
 
 **Success = User reviews docs.md and says "Yes, this is exactly what I want to build"**`;
 
 /**
- * Build the effective prompt for requirements gathering
- * Just returns the user message - all instructions are in the system prompt
+ * Execute a tool call (write or edit docs.md)
  */
-function buildRequirementsPrompt(userMessage: string, _isFirstRequest: boolean): string {
-  // System prompt contains all instructions, so just return the user message
-  return userMessage;
+function executeToolCall(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  workspaceRoot: string
+): string {
+  const docsPath = join(workspaceRoot, 'docs.md');
+
+  try {
+    if (toolName === 'write_docs') {
+      const content = toolInput.content as string;
+      writeFileSync(docsPath, content, 'utf-8');
+      console.log('\n✍️  Created docs.md with comprehensive requirements');
+      return 'Successfully created docs.md file';
+    } else if (toolName === 'edit_docs') {
+      const content = toolInput.content as string;
+      writeFileSync(docsPath, content, 'utf-8');
+      console.log('\n✏️  Updated docs.md with revised requirements');
+      return 'Successfully updated docs.md file';
+    } else {
+      return `Unknown tool: ${toolName}`;
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error writing docs.md';
+    console.error(`\n❌ Failed to write docs.md: ${errorMessage}`);
+    return `Error: ${errorMessage}`;
+  }
 }
 
 /**
@@ -191,115 +247,214 @@ function formatTokenUsage(
  */
 async function processClaudeInteraction(
   userInput: string,
-  sessionId: string | null,
-  isFirstRequest: boolean
+  previousMessages: Anthropic.MessageParam[],
+  workspaceRoot: string,
+  onStream?: (text: string) => void
 ): Promise<{
   response: string;
-  sessionId: string;
+  messages: Anthropic.MessageParam[];
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
 }> {
-  const workspaceRoot = process.cwd();
+  const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
 
-  // Build the effective prompt (just returns the user message now)
-  const effectivePrompt = buildRequirementsPrompt(userInput, isFirstRequest);
+  // Build message history: previous messages + new user message
+  const messages: Anthropic.MessageParam[] = [
+    ...previousMessages,
+    {
+      role: 'user',
+      content: userInput,
+    },
+  ];
 
-  const options: Options = {
-    model: 'claude-sonnet-4-5',
-    maxTurns: 20,
-    cwd: workspaceRoot,
-    permissionMode: 'acceptEdits',
-    resume: sessionId || undefined,
-    allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
-    systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
-  };
-
-  const responseStream = query({ prompt: effectivePrompt, options });
+  // Stream the response
+  const stream = await anthropic.messages.stream({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 8096,
+    system: REQUIREMENTS_SYSTEM_PROMPT,
+    tools: REQUIREMENTS_TOOLS,
+    messages,
+  });
 
   let responseText = '';
-  let newSessionId = sessionId || '';
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheCreationTokens = 0;
-  let cacheReadTokens = 0;
+  const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
   let isFirstOutput = true;
 
-  // Track accumulated text per block index for delta calculation
-  const blockTexts: Map<number, string> = new Map();
-
-  // Process the async generator with streaming
-  for await (const message of responseStream) {
-    // Capture session ID from system init message
-    if (message.type === 'system' && message.subtype === 'init') {
-      if (!newSessionId) {
-        newSessionId = message.session_id;
-        console.log(`\n🆔 Session ID captured from system init: ${newSessionId}\n`);
-      }
-    }
-
-    // Also try capturing from ANY message that has a session_id
-    const messageWithId = message as MessageWithSessionId;
-    if (!newSessionId && messageWithId.session_id) {
-      newSessionId = messageWithId.session_id;
-      console.log(`\n🆔 Session ID captured from ${message.type} message: ${newSessionId}\n`);
-    }
-
-    if (message.type === 'assistant') {
-      const content = message.message.content;
-
-      for (let i = 0; i < content.length; i++) {
-        const block = content[i];
-
-        if (block.type === 'text') {
-          const currentText = block.text || '';
-          const previousText = blockTexts.get(i) || '';
-
-          // Calculate the delta (new text added since last message)
-          const delta = currentText.substring(previousText.length);
-
-          // Stream only the delta to console in real-time
-          if (delta) {
-            if (isFirstOutput) {
-              process.stdout.write('\n> Claude:\n');
-              isFirstOutput = false;
-            }
-            process.stdout.write(delta);
+  // Process stream events
+  for await (const event of stream) {
+    if (event.type === 'content_block_start') {
+      if (event.content_block.type === 'text') {
+        if (isFirstOutput) {
+          if (!onStream) {
+            process.stdout.write('\n> Claude:\n');
           }
-
-          // Update tracked text and full response
-          blockTexts.set(i, currentText);
-          responseText = currentText;
-        } else if (block.type === 'tool_use') {
-          // Show tool usage
-          if (block.name === 'Write' || block.name === 'Edit') {
-            const input = block.input as Record<string, unknown>;
-            if (input.path === 'docs.md' || (input.path as string)?.includes('docs.md')) {
-              console.log('\n\n✍️  Generating docs.md...');
-            }
-          }
+          isFirstOutput = false;
         }
       }
-    } else if (message.type === 'result' && message.subtype === 'success') {
-      // Track token usage
-      if (message.usage) {
-        inputTokens += message.usage.input_tokens || 0;
-        outputTokens += message.usage.output_tokens || 0;
-        cacheCreationTokens += message.usage.cache_creation_input_tokens || 0;
-        cacheReadTokens += message.usage.cache_read_input_tokens || 0;
+    } else if (event.type === 'content_block_delta') {
+      if (event.delta.type === 'text_delta') {
+        const delta = event.delta.text;
+        responseText += delta;
+
+        // Stream to console or callback
+        if (onStream) {
+          onStream(delta);
+        } else {
+          process.stdout.write(delta);
+        }
       }
+    } else if (event.type === 'content_block_stop') {
+      // Content block finished
     }
   }
 
-  return {
-    response: responseText,
-    sessionId: newSessionId,
-    inputTokens,
-    outputTokens,
-    cacheCreationTokens,
-    cacheReadTokens,
-  };
+  // Get final message from stream
+  const finalMessage = await stream.finalMessage();
+
+  // Extract tool uses from the response
+  for (const block of finalMessage.content) {
+    if (block.type === 'tool_use') {
+      toolUses.push({
+        id: block.id,
+        name: block.name,
+        input: block.input as Record<string, unknown>,
+      });
+    }
+  }
+
+  // Execute tools and build tool result messages
+  const hasToolCalls = toolUses.length > 0;
+  let updatedMessages = messages;
+
+  if (hasToolCalls) {
+    // Add assistant message with tool uses
+    updatedMessages = [
+      ...messages,
+      {
+        role: 'assistant',
+        content: finalMessage.content,
+      },
+    ];
+
+    // Execute each tool and collect results
+    const toolResults: Anthropic.ToolResultBlockParam[] = toolUses.map((tool) => {
+      const result = executeToolCall(tool.name, tool.input, workspaceRoot);
+      return {
+        type: 'tool_result',
+        tool_use_id: tool.id,
+        content: result,
+      };
+    });
+
+    // Add tool results as user message
+    updatedMessages = [
+      ...updatedMessages,
+      {
+        role: 'user',
+        content: toolResults,
+      },
+    ];
+
+    // Continue conversation after tool execution to get final response
+    const followupStream = await anthropic.messages.stream({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8096,
+      system: REQUIREMENTS_SYSTEM_PROMPT,
+      tools: REQUIREMENTS_TOOLS,
+      messages: updatedMessages,
+    });
+
+    let followupText = '';
+    for await (const event of followupStream) {
+      if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          const delta = event.delta.text;
+          followupText += delta;
+
+          // Stream followup response
+          if (onStream) {
+            onStream(delta);
+          } else {
+            process.stdout.write(delta);
+          }
+        }
+      }
+    }
+
+    const followupMessage = await followupStream.finalMessage();
+
+    // Update response and messages
+    responseText += '\n' + followupText;
+    updatedMessages = [
+      ...updatedMessages,
+      {
+        role: 'assistant',
+        content: followupMessage.content,
+      },
+    ];
+
+    // Combine token usage from both calls
+    const finalUsage = finalMessage.usage as unknown as {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+    const followupUsage = followupMessage.usage as unknown as {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+
+    const combinedUsage = {
+      input_tokens: finalUsage.input_tokens + followupUsage.input_tokens,
+      output_tokens: finalUsage.output_tokens + followupUsage.output_tokens,
+      cache_creation_input_tokens:
+        (finalUsage.cache_creation_input_tokens || 0) +
+        (followupUsage.cache_creation_input_tokens || 0),
+      cache_read_input_tokens:
+        (finalUsage.cache_read_input_tokens || 0) + (followupUsage.cache_read_input_tokens || 0),
+    };
+
+    return {
+      response: responseText,
+      messages: updatedMessages,
+      inputTokens: combinedUsage.input_tokens,
+      outputTokens: combinedUsage.output_tokens,
+      cacheCreationTokens: combinedUsage.cache_creation_input_tokens,
+      cacheReadTokens: combinedUsage.cache_read_input_tokens,
+    };
+  } else {
+    // No tool calls - just add assistant response to messages
+    updatedMessages = [
+      ...messages,
+      {
+        role: 'assistant',
+        content: finalMessage.content,
+      },
+    ];
+
+    const usage = finalMessage.usage as unknown as {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+
+    return {
+      response: responseText,
+      messages: updatedMessages,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheCreationTokens: usage.cache_creation_input_tokens || 0,
+      cacheReadTokens: usage.cache_read_input_tokens || 0,
+    };
+  }
 }
 
 /**
@@ -310,7 +465,7 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
   const {
     workspaceRoot,
     userMessage,
-    sessionId = null,
+    previousMessages = [],
     isFirstRequest = false,
     onStream,
   } = options;
@@ -321,148 +476,49 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
 
-    // Build the prompt (just returns the user message now - system prompt has all instructions)
-    const effectivePrompt = buildRequirementsPrompt(userMessage, isFirstRequest);
-
-    // Query options with custom requirements gathering system prompt
-    const queryOptions: Options = {
-      model: 'claude-sonnet-4-5',
-      maxTurns: 20,
-      cwd: workspaceRoot,
-      permissionMode: 'acceptEdits',
-      resume: sessionId || undefined, // Resume previous session if sessionId provided
-      allowedTools: ['Read', 'Write', 'Edit', 'LS', 'Grep', 'Glob', 'WebSearch'],
-      systemPrompt: REQUIREMENTS_SYSTEM_PROMPT as string, // SDK accepts string despite TypeScript types
-    };
-
-    console.log(`📋 [RequirementsCore] Starting query with session: ${sessionId || 'NEW'}`);
+    console.log(`📋 [RequirementsCore] Starting query`);
     console.log(`📋 [RequirementsCore] Is first request: ${isFirstRequest}`);
+    console.log(`📋 [RequirementsCore] Previous messages: ${previousMessages.length}`);
 
-    // Execute query
-    const responseStream = query({ prompt: effectivePrompt, options: queryOptions });
-
-    let responseText = '';
-    let newSessionId = sessionId || '';
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheCreationTokens = 0;
-    let cacheReadTokens = 0;
-
-    // Process the async generator with streaming
-    // Track accumulated text per block index for delta calculation
-    const blockTexts: Map<number, string> = new Map();
-
-    try {
-      for await (const message of responseStream) {
-        // Debug: Log ALL message details to understand stream structure
-        const messageWithId = message as MessageWithSessionId;
-        console.log(
-          `📨 [RequirementsCore] Message received:`,
-          JSON.stringify(
-            {
-              type: message.type,
-              subtype: messageWithId.subtype,
-              hasSessionId: !!messageWithId.session_id,
-              sessionIdValue: messageWithId.session_id || 'N/A',
-              keys: Object.keys(message),
-            },
-            null,
-            2
-          )
-        );
-
-        // Capture session ID from system init message (first message in stream)
-        if (message.type === 'system' && message.subtype === 'init') {
-          if (!newSessionId) {
-            newSessionId = message.session_id;
-            console.log(
-              `🆔 [RequirementsCore] Captured new session ID from system init: ${newSessionId}`
-            );
-          }
-        }
-
-        // Also try capturing from ANY message that has a session_id
-        if (!newSessionId && messageWithId.session_id) {
-          newSessionId = messageWithId.session_id;
-          console.log(
-            `🆔 [RequirementsCore] Captured session ID from ${message.type} message: ${newSessionId}`
-          );
-        }
-
-        if (message.type === 'assistant') {
-          const content = message.message.content;
-
-          for (let i = 0; i < content.length; i++) {
-            const block = content[i];
-
-            if (block.type === 'text') {
-              const currentText = block.text || '';
-              const previousText = blockTexts.get(i) || '';
-
-              // Calculate the delta (new text added since last message)
-              const delta = currentText.substring(previousText.length);
-
-              // Stream the delta if callback provided and there's new text
-              if (delta && onStream) {
-                onStream(delta);
-              }
-
-              // Update the tracked text for this block
-              blockTexts.set(i, currentText);
-
-              // Accumulate full response
-              responseText = currentText;
-            }
-          }
-
-          // Track token usage
-          if (message.message.usage) {
-            inputTokens += message.message.usage.input_tokens || 0;
-            outputTokens += message.message.usage.output_tokens || 0;
-            cacheCreationTokens += message.message.usage.cache_creation_input_tokens || 0;
-            cacheReadTokens += message.message.usage.cache_read_input_tokens || 0;
-          }
-        }
-      }
-    } catch (streamError) {
-      throw streamError;
-    }
+    // Process interaction
+    const result = await processClaudeInteraction(
+      userMessage,
+      previousMessages,
+      workspaceRoot,
+      onStream
+    );
 
     // Check if docs.md was created
     let docsCreated = false;
     let docsContent: string | undefined;
     const docsPath = join(workspaceRoot, 'docs.md');
 
-    try {
-      const fs = await import('fs/promises');
-      docsContent = await fs.readFile(docsPath, 'utf-8');
+    if (existsSync(docsPath)) {
+      docsContent = readFileSync(docsPath, 'utf-8');
       docsCreated = true;
-    } catch {
-      // docs.md not yet created
-      docsCreated = false;
     }
 
-    console.log(`✅ [RequirementsCore] Returning session ID: ${newSessionId}`);
+    console.log(`✅ [RequirementsCore] Interaction complete`);
     console.log(`✅ [RequirementsCore] Docs created: ${docsCreated}`);
 
     return {
       success: true,
-      response: responseText,
-      sessionId: newSessionId,
+      response: result.response,
+      messages: result.messages,
       docsCreated,
       docsContent,
       tokenUsage: {
-        input: inputTokens,
-        output: outputTokens,
-        cacheCreation: cacheCreationTokens,
-        cacheRead: cacheReadTokens,
+        input: result.inputTokens,
+        output: result.outputTokens,
+        cacheCreation: result.cacheCreationTokens,
+        cacheRead: result.cacheReadTokens,
       },
     };
   } catch (error) {
     return {
       success: false,
       response: '',
-      sessionId: sessionId || '',
+      messages: previousMessages,
       docsCreated: false,
       tokenUsage: {
         input: 0,
@@ -504,11 +560,10 @@ async function interactiveSession(): Promise<void> {
 
   const session: RequirementsSession = {
     productDescription: '',
-    conversationHistory: [],
+    messages: [],
     isFirstRequest: true,
   };
 
-  let sessionId: string | null = null;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreationTokens = 0;
@@ -646,7 +701,6 @@ async function interactiveSession(): Promise<void> {
     }
 
     session.productDescription = productDescription;
-    session.conversationHistory.push(`User: ${productDescription}`);
 
     // Main conversation loop
     let continueConversation = true;
@@ -654,19 +708,17 @@ async function interactiveSession(): Promise<void> {
     while (continueConversation) {
       console.log('\n🤔 Claude is thinking...\n');
 
-      // Get Claude's response with streaming
-      const result = await processClaudeInteraction(
-        session.isFirstRequest
+      // Get current user message
+      const userMessage =
+        session.messages.length === 0
           ? productDescription
-          : session.conversationHistory[session.conversationHistory.length - 1].replace(
-              'User: ',
-              ''
-            ),
-        sessionId,
-        session.isFirstRequest
-      );
+          : (session.messages[session.messages.length - 1].content as string);
 
-      sessionId = result.sessionId;
+      // Get Claude's response with streaming
+      const result = await processClaudeInteraction(userMessage, session.messages, process.cwd());
+
+      // Update session messages
+      session.messages = result.messages;
       session.isFirstRequest = false;
 
       // Track costs
@@ -695,32 +747,25 @@ async function interactiveSession(): Promise<void> {
       );
       console.log('─'.repeat(90) + '\n');
 
-      session.conversationHistory.push(`Claude: ${result.response}`);
-
       // Check if docs.md was created
       const docsPath = join(process.cwd(), 'docs.md');
-      try {
-        const fs = await import('fs');
-        if (fs.existsSync(docsPath)) {
-          console.log('\n✅ Requirements document created: docs.md');
-          console.log('\n' + '═'.repeat(90));
-          console.log('📊 Total Session Cost:');
-          console.log(
-            formatTokenUsage(
-              totalInputTokens,
-              totalOutputTokens,
-              totalCacheCreationTokens,
-              totalCacheReadTokens,
-              totalCost
-            )
-          );
-          console.log('═'.repeat(90));
-          console.log('\n🎉 Requirements gathering complete!\n');
-          continueConversation = false;
-          break;
-        }
-      } catch {
-        // docs.md not yet created, continue conversation
+      if (existsSync(docsPath)) {
+        console.log('\n✅ Requirements document created: docs.md');
+        console.log('\n' + '═'.repeat(90));
+        console.log('📊 Total Session Cost:');
+        console.log(
+          formatTokenUsage(
+            totalInputTokens,
+            totalOutputTokens,
+            totalCacheCreationTokens,
+            totalCacheReadTokens,
+            totalCost
+          )
+        );
+        console.log('═'.repeat(90));
+        console.log('\n🎉 Requirements gathering complete!\n');
+        continueConversation = false;
+        break;
       }
 
       // Ask for user response
@@ -750,7 +795,14 @@ async function interactiveSession(): Promise<void> {
         break;
       }
 
-      session.conversationHistory.push(`User: ${userResponse}`);
+      // Add user response to messages
+      session.messages = [
+        ...session.messages,
+        {
+          role: 'user',
+          content: userResponse,
+        },
+      ];
     }
   } catch (error) {
     console.error('\n❌ Error during requirements gathering:', error);
