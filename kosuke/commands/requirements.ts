@@ -263,14 +263,17 @@ async function processClaudeInteraction(
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
-  // Build message history: previous messages + new user message
-  const messages: Anthropic.MessageParam[] = [
-    ...previousMessages,
-    {
-      role: 'user',
-      content: userInput,
-    },
-  ];
+  // Build message history: use previous messages as-is if userInput is empty,
+  // otherwise add new user message (only used for first interaction)
+  const messages: Anthropic.MessageParam[] = userInput
+    ? [
+        ...previousMessages,
+        {
+          role: 'user',
+          content: userInput,
+        },
+      ]
+    : previousMessages;
 
   // Stream the response
   const stream = await anthropic.messages.stream({
@@ -720,16 +723,18 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
     while (continueConversation) {
       console.log('\n🤔 Claude is thinking...\n');
 
-      // Get current user message
-      const userMessage =
-        session.messages.length === 0
-          ? productDescription
-          : (session.messages[session.messages.length - 1].content as string);
+      // On first request, add the product description as first user message
+      if (session.messages.length === 0) {
+        session.messages.push({
+          role: 'user',
+          content: productDescription,
+        });
+      }
 
-      // Get Claude's response with streaming
-      const result = await processClaudeInteraction(userMessage, session.messages, process.cwd());
+      // Get Claude's response with streaming (messages already contain the latest user input)
+      const result = await processClaudeInteraction('', session.messages, process.cwd());
 
-      // Update session messages
+      // Update session messages with Claude's response
       session.messages = result.messages;
       session.isFirstRequest = false;
 
