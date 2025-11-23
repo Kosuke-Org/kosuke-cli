@@ -106,7 +106,9 @@ async function main() {
         const options = {
           path: args.find((arg) => arg.startsWith('--path='))?.split('=')[1],
           output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
-          template: args.find((arg) => arg.startsWith('--template='))?.split('=')[1],
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await ticketsCommand(options);
@@ -211,12 +213,12 @@ COMMANDS:
 
   sync-rules [options]
     Sync rules and documentation from kosuke-template
-    
+
     Options:
       --force               Compare files regardless of recent commit history
       --pr                  Create a pull request with changes
       --base-branch=<name>  Base branch for PR (default: current branch)
-    
+
     Examples:
       kosuke sync-rules                    # Local changes only
       kosuke sync-rules --force            # Force comparison
@@ -226,13 +228,13 @@ COMMANDS:
   analyse [options]
     Analyze and fix code quality issues against CLAUDE.md rules
     Applies fixes locally by default
-    
+
     Options:
       --pr                  Create a pull request with fixes
       --base-branch=<name>  Base branch for PR (default: current branch)
       --scope=<dirs>        Analyze specific directories (comma-separated)
       --types=<exts>        Analyze specific file types (comma-separated)
-    
+
     Examples:
       kosuke analyse                       # Local fixes only
       kosuke analyse --pr                  # Create PR with fixes
@@ -243,11 +245,11 @@ COMMANDS:
   lint [options]
     Use Claude AI to automatically fix linting errors
     Applies fixes locally by default
-    
+
     Options:
       --pr                  Create a pull request with fixes
       --base-branch=<name>  Base branch for PR (default: current branch)
-    
+
     Examples:
       kosuke lint                          # Local fixes only
       kosuke lint --pr                     # Create PR with fixes
@@ -256,18 +258,18 @@ COMMANDS:
   requirements
     Interactive requirements gathering with Claude AI
     Generates a comprehensive docs.md file
-    
+
     Examples:
       kosuke requirements
 
   getcode [repo] "<query>" [options]
     Explore GitHub repositories and fetch code implementations
     Uses Claude Code Agent to find and explain code
-    
+
     Options:
       --template, -t        Use kosuke-template repository
       --output=<file>       Save output to file
-    
+
     Examples:
       kosuke getcode "facebook/react" "How does reconciliation work?"
       kosuke getcode "How is routing implemented in Next.js?"
@@ -280,21 +282,24 @@ COMMANDS:
     1. Schema tickets (database design)
     2. Backend tickets (API, services, business logic)
     3. Frontend tickets (pages, components, UI)
-    
+
     Options:
-      --path=<file>         Path to requirements document (default: docs.md)
-      --output=<file>       Output file for tickets (default: tickets.json)
-      --template=<repo>     Custom template repository (default: kosuke-template)
-    
+      --path=<file>         Path to requirements document (default: docs.md, relative to project directory)
+      --output=<file>       Output file for tickets (default: tickets.json, relative to project directory)
+      --directory=<path>    Directory for Claude to explore (default: current directory)
+      --dir=<path>          Alias for --directory
+
     Examples:
-      kosuke tickets                          # Use docs.md
-      kosuke tickets --path=requirements.md   # Custom requirements file
-      kosuke tickets --output=my-tickets.json # Custom output file
+      kosuke tickets                                    # Use docs.md in current directory
+      kosuke tickets --path=requirements.md             # Custom requirements file
+      kosuke tickets --output=my-tickets.json           # Custom output file
+      kosuke tickets --directory=./projects/my-app      # Analyze specific directory
+      kosuke tickets --dir=./my-app --path=docs/spec.md # Custom directory and requirements path
 
   ship --ticket=<ID> [options]
     Implement a single ticket from tickets.json
     Follows CLAUDE.md rules, runs linting, and optionally performs review and tests
-    
+
     Options:
       --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
       --review              Perform code review step after implementation
@@ -303,7 +308,7 @@ COMMANDS:
       --pr                  Create new branch and pull request (mutually exclusive with --commit)
       --base-branch=<name>  Base branch for PR (default: current branch)
       --tickets=<file>      Path to tickets file (default: tickets.json)
-    
+
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
       kosuke ship --ticket=BACKEND-2 --review      # Implement with review
@@ -317,24 +322,24 @@ COMMANDS:
     Automatically commits each ticket to current branch
     Processes tickets in order: Schema → Backend → Frontend
     Frontend tickets automatically include E2E testing
-    
+
     Options:
       --tickets=<file>      Path to tickets file (default: tickets.json)
-    
+
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
       kosuke build                            # Process and commit all tickets
       gh pr create                            # Create PR manually
-      
+
       kosuke build --tickets=custom.json      # Use custom tickets file
-    
+
     Note: If a ticket fails, fix the issue and run build again to resume
 
   review
     Review current git diff against CLAUDE.md rules
     Identifies and fixes compliance issues in uncommitted changes
     Note: Changes applied locally only (no --pr support)
-    
+
     Examples:
       kosuke review                           # Review uncommitted changes
 
@@ -342,7 +347,7 @@ COMMANDS:
     Run E2E tests for a ticket with automated fixing
     Uses Playwright for testing, Claude AI for analyzing and fixing issues
     Iteratively tests and fixes until passing or max retries reached
-    
+
     Options:
       --ticket=<ID>         Ticket ID to test (required, e.g., FRONTEND-1)
       --url=<URL>           Base URL (default: http://localhost:3000)
@@ -353,7 +358,7 @@ COMMANDS:
       --tickets=<file>      Path to tickets file (default: tickets.json)
       --pr                  Create pull request with fixes
       --base-branch=<name>  Base branch for PR (default: current branch)
-    
+
     Examples:
       kosuke test --ticket=FRONTEND-1                    # Test with auto-fix
       kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
@@ -365,7 +370,7 @@ COMMANDS:
 GLOBAL OPTIONS:
 
   --no-logs           Disable logging to Kosuke API (useful when kosuke-cli is used as library)
-                      By default, logging is enabled if KOSUKE_BASE_URL, KOSUKE_API_KEY, 
+                      By default, logging is enabled if KOSUKE_BASE_URL, KOSUKE_API_KEY,
                       and KOSUKE_PROJECT_ID environment variables are set.
                       This flag can be used with any command to prevent API logging calls.
 

@@ -134,6 +134,22 @@ function logAssistantMessage(text: string, verbosity: AgentVerbosity): void {
 }
 
 /**
+ * Format tool arguments for display (truncate if too long)
+ */
+function formatToolArgs(input: unknown, maxLength: number = 80): string {
+  if (!input || typeof input !== 'object') {
+    return JSON.stringify(input);
+  }
+
+  const str = JSON.stringify(input);
+  if (str.length <= maxLength) {
+    return str;
+  }
+
+  return `${str.substring(0, maxLength)}...`;
+}
+
+/**
  * Log tool usage
  */
 function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set<string>): void {
@@ -144,18 +160,34 @@ function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set
       filesReferenced.add(input.target_file);
     }
   } else if (toolName === 'grep' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { pattern?: string };
-    console.log(`   🔍 Searching for: ${input.pattern || 'pattern'}`);
+    const input = toolInput as { pattern?: string; path?: string };
+    const pathInfo = input.path ? ` in ${input.path}` : '';
+    console.log(`   🔍 Searching for: ${input.pattern || 'pattern'}${pathInfo}`);
   } else if (toolName === 'glob_file_search' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { glob_pattern?: string };
-    console.log(`   📁 Finding files: ${input.glob_pattern || '*'}`);
+    const input = toolInput as { glob_pattern?: string; target_directory?: string };
+    const dirInfo = input.target_directory ? ` in ${input.target_directory}` : '';
+    console.log(`   📁 Finding files: ${input.glob_pattern || '*'}${dirInfo}`);
   } else if (toolName === 'codebase_search' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { query?: string };
-    console.log(`   🔎 Searching codebase: ${input.query || 'query'}`);
+    const input = toolInput as { query?: string; target_directories?: string[] };
+    const dirInfo =
+      input.target_directories && input.target_directories.length > 0
+        ? ` in ${input.target_directories.join(', ')}`
+        : '';
+    console.log(`   🔎 Searching codebase: ${input.query || 'query'}${dirInfo}`);
   } else if (toolName === 'write' || toolName === 'search_replace') {
     // Don't log here - fixCount will handle it
+  } else if (toolName === 'run_terminal_cmd' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as { command?: string };
+    const cmd = input.command || 'command';
+    const truncated = cmd.length > 60 ? `${cmd.substring(0, 60)}...` : cmd;
+    console.log(`   🔧 Running: ${truncated}`);
+  } else if (toolName === 'list_dir' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as { target_directory?: string };
+    console.log(`   📂 Listing directory: ${input.target_directory || '.'}`);
   } else {
-    console.log(`   🔧 Using ${toolName}`);
+    // Generic tool logging with arguments
+    const args = formatToolArgs(toolInput, 60);
+    console.log(`   🔧 ${toolName}(${args})`);
   }
 }
 

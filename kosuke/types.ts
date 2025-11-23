@@ -88,7 +88,7 @@ export interface CodeExplorationResult {
 export interface TicketsOptions {
   path?: string; // Path to requirements document (default: docs.md)
   output?: string; // Output file (default: tickets.json)
-  template?: string; // Custom template repo (default: kosuke-template)
+  directory?: string; // Directory for Claude to explore (default: cwd)
   noLogs?: boolean;
 }
 
@@ -106,6 +106,7 @@ export interface TicketsResult {
   backendTickets: Ticket[];
   frontendTickets: Ticket[];
   totalTickets: number;
+  projectPath: string; // Directory where tickets were generated
   tokensUsed: {
     input: number;
     output: number;

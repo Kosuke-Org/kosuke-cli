@@ -7,15 +7,21 @@
  * 2. Backend tickets (API, services, business logic)
  * 3. Frontend tickets (pages, components, UI)
  *
+ * Claude Code Agent explores the specified directory (default: current directory)
+ * to understand the existing codebase and generate contextual tickets.
+ *
+ * All paths (--path and --output) are relative to the project directory.
+ *
  * Usage:
- *   kosuke tickets                           # Use docs.md
- *   kosuke tickets --path=custom.md          # Custom requirements file
- *   kosuke tickets --output=my-tickets.json  # Custom output file
+ *   kosuke tickets                                    # Use docs.md in current directory
+ *   kosuke tickets --path=custom.md                   # Custom requirements file
+ *   kosuke tickets --output=my-tickets.json           # Custom output file
+ *   kosuke tickets --directory=./projects/my-app      # Analyze specific directory
+ *   kosuke tickets --dir=./my-app --path=docs/spec.md # Custom directory and requirements path
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { ensureRepoReady } from '../utils/repository-manager.js';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, resolve } from 'path';
 import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { TicketsOptions, Ticket, TicketsResult } from '../types.js';
@@ -26,7 +32,7 @@ import type { TicketsOptions, Ticket, TicketsResult } from '../types.js';
 function buildTicketGenerationPrompt(
   phase: 'schema' | 'backend' | 'frontend',
   requirementsContent: string,
-  repoPath: string
+  projectPath: string
 ): string {
   const phaseInstructions = {
     schema: `
@@ -38,8 +44,6 @@ Generate ONE comprehensive schema ticket that includes:
 - Indexes and constraints
 - Data types and validation rules
 - Any special considerations (soft deletes, timestamps, etc.)
-
-The schema should follow the patterns used in kosuke-template (Prisma ORM).
 
 Ticket ID: SCHEMA-1
 `,
@@ -57,8 +61,6 @@ Generate backend tickets for:
 Create ONE ticket per feature/module. Each ticket should be independently implementable.
 
 Ticket IDs: BACKEND-1, BACKEND-2, BACKEND-3, etc. (sequential)
-
-The implementation should follow the patterns used in kosuke-template (tRPC, Next.js API routes).
 `,
     frontend: `
 **PHASE 3: FRONTEND/UI TICKETS**
@@ -74,8 +76,6 @@ Generate frontend tickets for:
 Create ONE ticket per PAGE. Each ticket should cover all components and functionality for that page.
 
 Ticket IDs: FRONTEND-1, FRONTEND-2, FRONTEND-3, etc. (sequential)
-
-The implementation should follow the patterns used in kosuke-template (Next.js, React, TailwindCSS).
 `,
   };
 
@@ -88,9 +88,9 @@ ${phaseInstructions[phase]}
 ${requirementsContent}
 
 **Context:**
-You have access to the kosuke-template repository at: ${repoPath}
-Use this to understand the tech stack, architecture patterns, and coding conventions.
-DO NOT reference specific files in your tickets - use the template only for general understanding.
+You have access to the project directory at: ${projectPath}
+Explore the codebase to understand the tech stack, architecture patterns, and coding conventions.
+Use read_file, grep, and codebase_search tools to understand the existing implementation.
 
 **Ticket Structure:**
 Each ticket must be a JSON object with:
@@ -108,7 +108,7 @@ Example:
   {
     "id": "SCHEMA-1",
     "title": "Design and implement complete database schema",
-    "description": "Create Prisma schema including:\\n- Users table with authentication fields\\n- Organizations table with multi-tenant support\\n- Posts table for social media content\\n- Automations table for campaign configuration\\n- Leads table with status tracking\\n\\nRelationships:\\n- User belongs to many Organizations\\n- Posts and Automations belong to Organization\\n- Leads belong to Automation and Post\\n\\nAcceptance Criteria:\\n- Schema validates with Prisma\\n- Migrations run successfully\\n- All relationships properly defined\\n- Indexes on foreign keys and frequently queried fields",
+    "description": "Create database schema including:\\n- Users table with authentication fields\\n- Organizations table with multi-tenant support\\n- Posts table for social media content\\n- Automations table for campaign configuration\\n- Leads table with status tracking\\n\\nRelationships:\\n- User belongs to many Organizations\\n- Posts and Automations belong to Organization\\n- Leads belong to Automation and Post\\n\\nAcceptance Criteria:\\n- Schema validates successfully\\n- Migrations run successfully\\n- All relationships properly defined\\n- Indexes on foreign keys and frequently queried fields",
     "estimatedEffort": 8,
     "status": "Todo"
   }
@@ -116,14 +116,14 @@ Example:
 
 **Critical Instructions:**
 1. Analyze the requirements thoroughly
-2. Explore kosuke-template to understand patterns (use read_file, grep, codebase_search tools)
+2. Explore the project directory to understand existing patterns (use read_file, grep, codebase_search tools)
 3. Generate tickets that are actionable and specific
 4. Return ONLY valid JSON - no explanations, no markdown formatting
 5. Ensure ticket IDs follow the naming convention (${phase.toUpperCase()}-N)
 6. Make descriptions detailed with clear acceptance criteria
 7. Estimate effort realistically (consider complexity, dependencies, testing)
 
-Begin by exploring the kosuke-template repository, then generate the tickets.`;
+Begin by exploring the project directory, then generate the tickets.`;
 }
 
 /**
@@ -173,12 +173,34 @@ function parseTicketsFromResponse(response: string, phase: string): Ticket[] {
 }
 
 /**
+ * Write tickets to file incrementally
+ */
+function writeTicketsToFile(
+  outputPath: string,
+  schemaTickets: Ticket[],
+  backendTickets: Ticket[],
+  frontendTickets: Ticket[]
+): void {
+  const allTickets = [...schemaTickets, ...backendTickets, ...frontendTickets];
+  const outputData = {
+    generatedAt: new Date().toISOString(),
+    totalTickets: allTickets.length,
+    tickets: allTickets,
+  };
+
+  writeFileSync(outputPath, JSON.stringify(outputData, null, 2), 'utf-8');
+}
+
+/**
  * Generate tickets for a specific phase
  */
 async function generatePhaseTickets(
   phase: 'schema' | 'backend' | 'frontend',
   requirementsContent: string,
-  repoPath: string
+  projectPath: string,
+  outputPath: string,
+  existingSchemaTickets: Ticket[],
+  existingBackendTickets: Ticket[]
 ): Promise<{
   tickets: Ticket[];
   tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
@@ -202,13 +224,13 @@ async function generatePhaseTickets(
   );
   console.log(`${'='.repeat(60)}\n`);
 
-  const systemPrompt = buildTicketGenerationPrompt(phase, requirementsContent, repoPath);
+  const systemPrompt = buildTicketGenerationPrompt(phase, requirementsContent, projectPath);
 
   const agentResult = await runAgent(
     `Generate ${phaseName[phase]} tickets from the requirements document.`,
     {
       systemPrompt,
-      cwd: repoPath,
+      cwd: projectPath,
       maxTurns: 25,
       verbosity: 'normal',
     }
@@ -226,6 +248,17 @@ async function generatePhaseTickets(
     );
   });
 
+  // Write tickets incrementally after each phase
+  if (phase === 'schema') {
+    writeTicketsToFile(outputPath, tickets, [], []);
+  } else if (phase === 'backend') {
+    writeTicketsToFile(outputPath, existingSchemaTickets, tickets, []);
+  } else if (phase === 'frontend') {
+    writeTicketsToFile(outputPath, existingSchemaTickets, existingBackendTickets, tickets);
+  }
+
+  console.log(`   💾 Progress saved to: ${outputPath}\n`);
+
   return {
     tickets,
     tokensUsed: agentResult.tokensUsed,
@@ -237,11 +270,31 @@ async function generatePhaseTickets(
  * Core tickets logic
  */
 export async function ticketsCore(options: TicketsOptions): Promise<TicketsResult> {
-  const { path = 'docs.md', template = 'Kosuke-Org/kosuke-template' } = options;
+  const { path = 'docs.md', directory } = options;
 
-  // 1. Read requirements document
+  // 1. Validate and resolve project directory
+  const projectPath = directory ? resolve(directory) : process.cwd();
+
+  if (!existsSync(projectPath)) {
+    throw new Error(
+      `Directory not found: ${projectPath}\n` +
+        `Please provide a valid directory using --directory=<path>\n` +
+        `Example: kosuke tickets --directory=./my-project`
+    );
+  }
+
+  const stats = statSync(projectPath);
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `Path is not a directory: ${projectPath}\n` + `Please provide a valid directory path.`
+    );
+  }
+
+  console.log(`📁 Using project directory: ${projectPath}\n`);
+
+  // 2. Read requirements document (relative to project directory)
   console.log('📄 Reading requirements document...');
-  const requirementsPath = join(process.cwd(), path);
+  const requirementsPath = join(projectPath, path);
 
   if (!existsSync(requirementsPath)) {
     throw new Error(
@@ -254,12 +307,11 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   const requirementsContent = readFileSync(requirementsPath, 'utf-8');
   console.log(`   ✅ Loaded ${path} (${requirementsContent.length} characters)\n`);
 
-  // 2. Fetch kosuke-template for context
-  console.log('📥 Fetching kosuke-template for context...');
-  const repoInfo = await ensureRepoReady(template);
-  console.log(`   ✅ Template repository ready at ${repoInfo.localPath}\n`);
+  // 3. Determine output path for incremental writes
+  const outputFilename = options.output || 'tickets.json';
+  const outputPath = join(projectPath, outputFilename);
 
-  // 3. Generate tickets in three phases
+  // 4. Generate tickets in three phases (written incrementally)
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreationTokens = 0;
@@ -270,7 +322,10 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   const schemaResult = await generatePhaseTickets(
     'schema',
     requirementsContent,
-    repoInfo.localPath
+    projectPath,
+    outputPath,
+    [],
+    []
   );
   totalInputTokens += schemaResult.tokensUsed.input;
   totalOutputTokens += schemaResult.tokensUsed.output;
@@ -282,7 +337,10 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   const backendResult = await generatePhaseTickets(
     'backend',
     requirementsContent,
-    repoInfo.localPath
+    projectPath,
+    outputPath,
+    schemaResult.tickets,
+    []
   );
   totalInputTokens += backendResult.tokensUsed.input;
   totalOutputTokens += backendResult.tokensUsed.output;
@@ -294,7 +352,10 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   const frontendResult = await generatePhaseTickets(
     'frontend',
     requirementsContent,
-    repoInfo.localPath
+    projectPath,
+    outputPath,
+    schemaResult.tickets,
+    backendResult.tickets
   );
   totalInputTokens += frontendResult.tokensUsed.input;
   totalOutputTokens += frontendResult.tokensUsed.output;
@@ -310,6 +371,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     backendTickets: backendResult.tickets,
     frontendTickets: frontendResult.tickets,
     totalTickets,
+    projectPath, // Include project path for output file resolution
     tokensUsed: {
       input: totalInputTokens,
       output: totalOutputTokens,
@@ -363,16 +425,10 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
     });
     console.log(`💰 Total Cost: ${costBreakdown}\n`);
 
-    // Save to file
-    const outputPath = options.output || 'tickets.json';
-    const outputData = {
-      generatedAt: new Date().toISOString(),
-      totalTickets: result.totalTickets,
-      tickets: [...result.schemaTickets, ...result.backendTickets, ...result.frontendTickets],
-    };
-
-    writeFileSync(outputPath, JSON.stringify(outputData, null, 2), 'utf-8');
-    console.log(`💾 Tickets saved to: ${outputPath}\n`);
+    // Final confirmation (file already written incrementally)
+    const outputFilename = options.output || 'tickets.json';
+    const outputPath = join(result.projectPath, outputFilename);
+    console.log(`✅ All tickets saved to: ${outputPath}\n`);
 
     console.log('✅ Ticket generation completed successfully!');
 
