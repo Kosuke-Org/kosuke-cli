@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import * as readline from 'readline';
 import { calculateCost } from '../utils/claude-agent.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
 
 /**
  * Options for programmatic requirements gathering
@@ -534,7 +535,11 @@ export async function requirementsCore(options: RequirementsOptions): Promise<Re
 /**
  * Interactive requirements gathering loop
  */
-async function interactiveSession(): Promise<void> {
+async function interactiveSession(logContext?: ReturnType<typeof logger.createContext>): Promise<{
+  messages: Anthropic.MessageParam[];
+  tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
+  cost: number;
+}> {
   console.log(`
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║              Kosuke Requirements - Interactive Requirements Tool             ║
@@ -547,8 +552,11 @@ async function interactiveSession(): Promise<void> {
   console.log('✨ Tip: Press Enter to submit, Shift+Enter for new lines.\n');
 
   // Set up global Ctrl+C handler for the entire interactive session
-  const handleSigInt = () => {
+  const handleSigInt = async () => {
     console.log('\n\n👋 Exiting requirements gathering...\n');
+    if (logContext) {
+      await logger.complete(logContext, 'cancelled');
+    }
     process.exit(0);
   };
   process.on('SIGINT', handleSigInt);
@@ -697,7 +705,11 @@ async function interactiveSession(): Promise<void> {
     if (!productDescription) {
       console.log('\n❌ No product description provided. Exiting.');
       rl.close();
-      return;
+      return {
+        messages: [],
+        tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: 0,
+      };
     }
 
     session.productDescription = productDescription;
@@ -812,12 +824,77 @@ async function interactiveSession(): Promise<void> {
     process.removeListener('SIGINT', handleSigInt);
     rl.close();
   }
+
+  // Return session data for logging
+  return {
+    messages: session.messages,
+    tokensUsed: {
+      input: totalInputTokens,
+      output: totalOutputTokens,
+      cacheCreation: totalCacheCreationTokens,
+      cacheRead: totalCacheReadTokens,
+    },
+    cost: totalCost,
+  };
+}
+
+/**
+ * Convert Anthropic messages to our conversation format
+ */
+function convertAnthropicMessagesToConversation(messages: Anthropic.MessageParam[]): Array<{
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
+}> {
+  return messages.map((msg) => {
+    const content =
+      typeof msg.content === 'string'
+        ? msg.content
+        : msg.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
+
+    // Extract tool calls if present (for assistant messages)
+    let toolCalls:
+      | Array<{
+          name: string;
+          input: unknown;
+          output?: unknown;
+        }>
+      | undefined;
+
+    if (typeof msg.content !== 'string') {
+      const toolUses = msg.content.filter((block) => block.type === 'tool_use');
+      if (toolUses.length > 0) {
+        toolCalls = toolUses.map((tool) => {
+          // Type guard for tool_use blocks
+          if ('name' in tool && 'input' in tool) {
+            return {
+              name: tool.name as string,
+              input: tool.input,
+            };
+          }
+          return { name: 'unknown', input: {} };
+        });
+      }
+    }
+
+    return {
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content,
+      timestamp: new Date().toISOString(),
+      toolCalls,
+    };
+  });
 }
 
 /**
  * Main requirements command
  */
 export async function requirementsCommand(): Promise<void> {
+  // Initialize logging context
+  const logContext = logger.createContext('tickets', { noLogs: false });
+  const cleanupHandler = setupCancellationHandler(logContext);
+
   try {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -825,9 +902,24 @@ export async function requirementsCommand(): Promise<void> {
     }
 
     // Start interactive session
-    await interactiveSession();
+    const sessionData = await interactiveSession(logContext);
+
+    // Track metrics
+    logger.trackTokens(logContext, sessionData.tokensUsed);
+
+    // Convert Anthropic messages to our conversation format
+    logContext.conversationMessages = convertAnthropicMessagesToConversation(sessionData.messages);
+
+    // Log successful execution
+    await logger.complete(logContext, 'success');
+    cleanupHandler();
   } catch (error) {
     console.error('\n❌ Requirements command failed:', error);
+
+    // Log failed execution
+    await logger.complete(logContext, 'error', error as Error);
+    cleanupHandler();
+
     throw error;
   }
 }

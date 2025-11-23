@@ -114,6 +114,16 @@ export interface TicketsResult {
     cacheRead: number;
   };
   cost: number;
+  conversationMessages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }>;
 }
 
 export interface ShipOptions {

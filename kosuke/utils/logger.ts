@@ -59,6 +59,18 @@ export interface CliLogData {
   cliVersion?: string;
   metadata?: Record<string, unknown>;
 
+  // Conversation Data (full capture for tickets/requirements commands)
+  conversationMessages?: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }>;
+
   // Timestamps (ISO 8601 format)
   startedAt: string;
   completedAt: string;
@@ -100,6 +112,16 @@ export interface CommandExecutionContext {
   iterations: number;
   filesModified: string[];
   noLogs: boolean; // Skip API calls when true
+  conversationMessages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }>; // Track conversation during execution
 }
 
 /**
@@ -230,6 +252,7 @@ class CliLogger {
       iterations: 0,
       filesModified: [],
       noLogs: options.noLogs || false,
+      conversationMessages: [],
     };
   }
 
@@ -291,6 +314,8 @@ class CliLogger {
       testsFailed: context.testsFailed > 0 ? context.testsFailed : undefined,
       iterations: context.iterations > 0 ? context.iterations : undefined,
       filesModified: context.filesModified.length > 0 ? context.filesModified : undefined,
+      conversationMessages:
+        context.conversationMessages.length > 0 ? context.conversationMessages : undefined,
       cliVersion: this.cliVersion,
       startedAt: context.startedAt,
       completedAt,

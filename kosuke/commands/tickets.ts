@@ -205,6 +205,16 @@ async function generatePhaseTickets(
   tickets: Ticket[];
   tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
   cost: number;
+  conversationMessages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }>;
 }> {
   const phaseEmoji = {
     schema: '🗄️',
@@ -233,6 +243,7 @@ async function generatePhaseTickets(
       cwd: projectPath,
       maxTurns: 25,
       verbosity: 'normal',
+      captureConversation: true, // Capture full conversation for backend logging
     }
   );
 
@@ -263,6 +274,7 @@ async function generatePhaseTickets(
     tickets,
     tokensUsed: agentResult.tokensUsed,
     cost: agentResult.cost,
+    conversationMessages: agentResult.conversationMessages || [],
   };
 }
 
@@ -318,6 +330,14 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   let totalCacheReadTokens = 0;
   let totalCost = 0;
 
+  // Collect all conversation messages from all phases
+  const allConversationMessages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
+  }> = [];
+
   // Phase 1: Schema
   const schemaResult = await generatePhaseTickets(
     'schema',
@@ -332,6 +352,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   totalCacheCreationTokens += schemaResult.tokensUsed.cacheCreation;
   totalCacheReadTokens += schemaResult.tokensUsed.cacheRead;
   totalCost += schemaResult.cost;
+  allConversationMessages.push(...schemaResult.conversationMessages);
 
   // Phase 2: Backend
   const backendResult = await generatePhaseTickets(
@@ -347,6 +368,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   totalCacheCreationTokens += backendResult.tokensUsed.cacheCreation;
   totalCacheReadTokens += backendResult.tokensUsed.cacheRead;
   totalCost += backendResult.cost;
+  allConversationMessages.push(...backendResult.conversationMessages);
 
   // Phase 3: Frontend
   const frontendResult = await generatePhaseTickets(
@@ -362,6 +384,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   totalCacheCreationTokens += frontendResult.tokensUsed.cacheCreation;
   totalCacheReadTokens += frontendResult.tokensUsed.cacheRead;
   totalCost += frontendResult.cost;
+  allConversationMessages.push(...frontendResult.conversationMessages);
 
   const totalTickets =
     schemaResult.tickets.length + backendResult.tickets.length + frontendResult.tickets.length;
@@ -379,6 +402,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
       cacheRead: totalCacheReadTokens,
     },
     cost: totalCost,
+    conversationMessages: allConversationMessages,
   };
 }
 
@@ -404,6 +428,7 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
 
     // Track metrics
     logger.trackTokens(logContext, result.tokensUsed);
+    logContext.conversationMessages = result.conversationMessages;
 
     // Display summary
     console.log(`\n${'='.repeat(60)}`);

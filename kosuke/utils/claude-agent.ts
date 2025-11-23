@@ -25,6 +25,7 @@ export interface AgentConfig {
   cwd?: string;
   verbosity?: AgentVerbosity;
   permissionMode?: PermissionMode;
+  captureConversation?: boolean; // Enable full conversation capture (for tickets/requirements)
 }
 
 /**
@@ -41,6 +42,16 @@ export interface AgentResult {
   cost: number;
   fixCount: number;
   filesReferenced: Set<string>;
+  conversationMessages?: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }>; // Full conversation capture (if enabled)
 }
 
 /**
@@ -202,6 +213,7 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     cwd = process.cwd(),
     verbosity = 'normal',
     permissionMode = 'bypassPermissions',
+    captureConversation = false,
   } = config;
 
   const options: Options = {
@@ -222,14 +234,59 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
   let fixCount = 0;
   const filesReferenced = new Set<string>();
 
+  // Conversation capture (if enabled)
+  const conversationMessages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls?: Array<{
+      name: string;
+      input: unknown;
+      output?: unknown;
+    }>;
+  }> = [];
+
+  // Track current assistant message and tool calls
+  let currentMessage: {
+    role: 'assistant';
+    content: string;
+    timestamp: string;
+    toolCalls: Array<{ name: string; input: unknown; output?: unknown }>;
+  } | null = null;
+
+  // Add user message if capturing
+  if (captureConversation) {
+    conversationMessages.push({
+      role: 'user',
+      content: prompt,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   // Process the response stream
   for await (const message of responseStream) {
     if (message.type === 'assistant') {
       const content = message.message.content;
+
+      // Start new assistant message if capturing
+      if (captureConversation && !currentMessage) {
+        currentMessage = {
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          toolCalls: [],
+        };
+      }
+
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           response += block.text;
           logAssistantMessage(block.text, verbosity);
+
+          // Add to current message content
+          if (captureConversation && currentMessage) {
+            currentMessage.content += block.text;
+          }
         } else if (block.type === 'tool_use') {
           // Track fixes
           if (block.name === 'write' || block.name === 'search_replace') {
@@ -238,9 +295,22 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
           } else {
             logToolUsage(block.name, block.input, filesReferenced);
           }
+
+          // Capture tool call
+          if (captureConversation && currentMessage) {
+            currentMessage.toolCalls.push({
+              name: block.name,
+              input: block.input,
+              // Output will be added when we receive tool_result
+            });
+          }
         }
       }
     }
+
+    // Capture tool results
+    // Note: tool_result is not part of the message stream type, so we skip this for now
+    // Tool outputs are captured through the SDK's internal handling
 
     // Track token usage
     if (message.type === 'result' && message.subtype === 'success') {
@@ -248,13 +318,24 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
       outputTokens += message.usage.output_tokens || 0;
       cacheCreationTokens += message.usage.cache_creation_input_tokens || 0;
       cacheReadTokens += message.usage.cache_read_input_tokens || 0;
+
+      // Save current message when turn completes
+      if (captureConversation && currentMessage) {
+        conversationMessages.push({
+          role: currentMessage.role,
+          content: currentMessage.content,
+          timestamp: currentMessage.timestamp,
+          toolCalls: currentMessage.toolCalls.length > 0 ? currentMessage.toolCalls : undefined,
+        });
+        currentMessage = null; // Reset for next turn
+      }
     }
   }
 
   // Calculate cost
   const cost = calculateCost(inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
 
-  return {
+  const result: AgentResult = {
     response: response.trim(),
     tokensUsed: {
       input: inputTokens,
@@ -266,4 +347,11 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     fixCount,
     filesReferenced,
   };
+
+  // Include conversation if captured
+  if (captureConversation && conversationMessages.length > 0) {
+    result.conversationMessages = conversationMessages;
+  }
+
+  return result;
 }
