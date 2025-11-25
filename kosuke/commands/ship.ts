@@ -121,9 +121,10 @@ function buildImplementationPrompt(ticket: Ticket, claudeRules: string): string 
 This is a SCHEMA ticket. After making changes to database schema files:
 1. Run \`bun run db:generate\` to generate Drizzle migrations
 2. Run \`bun run db:migrate\` to apply migrations to the database
-3. Verify migration files were created in lib/db/migrations/
-4. Handle any migration errors before proceeding
-5. Ensure schema changes follow Drizzle ORM best practices from CLAUDE.md
+3. Run \`bun run db:seed\` to seed the database with initial data
+4. Verify migration files were created in lib/db/migrations/
+5. Handle any migration errors before proceeding
+6. Ensure schema changes follow Drizzle ORM best practices from CLAUDE.md
 `
     : '';
 

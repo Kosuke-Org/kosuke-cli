@@ -13,7 +13,7 @@
  *   ship --ticket=<ID>      Implement a single ticket from tickets.json
  *   build                   Batch process all tickets from tickets.json
  *   review                  Review codebase against CLAUDE.md rules
- *   test --ticket=<ID>      Run E2E tests with automated fixing
+ *   test                    Run E2E tests with automated fixing (ticket or custom prompt)
  *
  * Usage:
  *   bun run kosuke sync-rules
@@ -25,7 +25,7 @@
  *   bun run kosuke ship --ticket=SCHEMA-1
  *   bun run kosuke build
  *   bun run kosuke review
- *   bun run kosuke test --ticket=FRONTEND-1
+ *   bun run kosuke test --ticket=FRONTEND-1 OR --prompt="Test login flow"
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -174,25 +174,39 @@ async function main() {
 
       case 'test': {
         const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
-        if (!ticketArg) {
-          console.error('❌ --ticket flag is required\n');
+        const promptArg = args.find((arg) => arg.startsWith('--prompt='))?.split('=')[1];
+
+        if (!ticketArg && !promptArg) {
+          console.error('❌ Either --ticket or --prompt flag is required\n');
           console.log(
-            'Usage: kosuke test --ticket=FRONTEND-1 [--url=URL] [--headed] [--pr] [--directory=<path>]'
+            'Usage: kosuke test --ticket=FRONTEND-1 [OPTIONS]  OR  kosuke test --prompt="..." [OPTIONS]'
           );
+          console.log('\nOptions:');
+          console.log('  --ticket=ID         Test a specific ticket from tickets.json');
+          console.log('  --prompt="..."      Test with a custom prompt');
+          console.log('  --url=URL           Base URL (default: http://localhost:3000)');
+          console.log('  --headed            Show browser window (default: headless)');
+          console.log('  --debug             Enable Playwright inspector');
+          console.log('  --update-baseline   Update visual baselines');
+          console.log('  --max-retries=N     Max fix attempts (default: 3)');
+          console.log('  --pr                Create PR with fixes');
+          console.log('  --directory=PATH    Directory to test (default: cwd)');
           console.log('\nExamples:');
-          console.log('  kosuke test --ticket=FRONTEND-1                    # Test with auto-fix');
-          console.log('  kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000');
+          console.log('  kosuke test --ticket=FRONTEND-1                    # Test ticket');
+          console.log('  kosuke test --prompt="Test login flow"             # Test with prompt');
           console.log('  kosuke test --ticket=FRONTEND-1 --headed           # Show browser');
-          console.log('  kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals');
-          console.log('  kosuke test --ticket=FRONTEND-1 --pr               # Create PR');
-          console.log(
-            '  kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory'
-          );
+          console.log('  kosuke test --prompt="..." --pr                    # Create PR');
+          process.exit(1);
+        }
+
+        if (ticketArg && promptArg) {
+          console.error('❌ Cannot provide both --ticket and --prompt. Use one or the other.\n');
           process.exit(1);
         }
 
         const options = {
           ticket: ticketArg,
+          prompt: promptArg,
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
           headed: args.includes('--headed'),
           debug: args.includes('--debug'),
@@ -371,15 +385,16 @@ COMMANDS:
     Examples:
       kosuke review                           # Review uncommitted changes
 
-  test --ticket=<ID> [options]
-    Run E2E tests for a ticket with automated fixing
+  test [--ticket=<ID> | --prompt="..."] [options]
+    Run E2E tests with automated fixing (either ticket or custom prompt)
     Uses Playwright for testing, Claude AI for analyzing and fixing issues
     Iteratively tests and fixes until passing or max retries reached
 
     Options:
-      --ticket=<ID>         Ticket ID to test (required, e.g., FRONTEND-1)
+      --ticket=<ID>         Ticket ID to test (from tickets.json, e.g., FRONTEND-1)
+      --prompt="..."        Custom test prompt (alternative to --ticket)
       --url=<URL>           Base URL (default: http://localhost:3000)
-      --headed              Show browser during testing
+      --headed              Show browser during testing (visible GUI window for debugging)
       --debug               Enable Playwright inspector
       --update-baseline     Update visual regression baselines
       --max-retries=<N>     Maximum fix-retest iterations (default: 3)
@@ -391,11 +406,12 @@ COMMANDS:
 
     Examples:
       kosuke test --ticket=FRONTEND-1                    # Test with auto-fix
+      kosuke test --prompt="Test user login flow"        # Test with custom prompt
       kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
-      kosuke test --ticket=FRONTEND-1 --headed           # Show browser
+      kosuke test --prompt="..." --headed                # Show browser (visible GUI)
       kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals
       kosuke test --ticket=FRONTEND-1 --max-retries=5    # More attempts
-      kosuke test --ticket=FRONTEND-1 --pr               # Create PR with fixes
+      kosuke test --prompt="..." --pr                    # Create PR with fixes
       kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory
 
 GLOBAL OPTIONS:

@@ -183,9 +183,10 @@ export interface ReviewResult {
 }
 
 export interface TestOptions {
-  ticket: string; // Ticket ID to test (required)
+  ticket?: string; // Ticket ID to test (either ticket or prompt required)
+  prompt?: string; // Custom test prompt (either ticket or prompt required)
   url?: string; // Base URL (default: http://localhost:3000)
-  headed?: boolean; // Show browser during testing
+  headed?: boolean; // Show browser during testing (visible GUI window)
   debug?: boolean; // Enable Playwright inspector
   updateBaseline?: boolean; // Update visual baselines
   maxRetries?: number; // Max fix-retest iterations (default: 3)

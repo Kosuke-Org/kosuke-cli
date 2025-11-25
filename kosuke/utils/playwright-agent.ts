@@ -232,6 +232,31 @@ export function isPlaywrightInstalled(cwd: string = process.cwd()): boolean {
 }
 
 /**
+ * Check if Playwright browsers are installed
+ */
+export function areBrowsersInstalled(): boolean {
+  try {
+    // Run playwright install --dry-run to check if browsers need installation
+    const output = execSync('npx playwright install chromium --dry-run', {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+
+    // If output contains download URLs or "Install location", browsers need installation
+    // If output is empty or very short, browsers are already installed
+    const needsInstall =
+      output.includes('Download url:') ||
+      output.includes('Install location:') ||
+      output.includes('browser:');
+
+    return !needsInstall;
+  } catch {
+    // If command fails, assume browsers aren't installed
+    return false;
+  }
+}
+
+/**
  * Install Playwright
  */
 export async function installPlaywright(cwd: string = process.cwd()): Promise<void> {
@@ -246,15 +271,26 @@ export async function installPlaywright(cwd: string = process.cwd()): Promise<vo
     });
 
     // Install browsers
-    execSync('npx playwright install chromium', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: 'inherit',
-    });
+    await installBrowsers();
 
     console.log('   ✅ Playwright installed\n');
   } catch (error) {
     throw new Error(`Failed to install Playwright: ${error}`);
+  }
+}
+
+/**
+ * Install Playwright browsers only
+ */
+export async function installBrowsers(): Promise<void> {
+  try {
+    execSync('npx playwright install chromium', {
+      encoding: 'utf-8',
+      stdio: 'inherit',
+    });
+    console.log('   ✅ Browsers installed\n');
+  } catch (error) {
+    throw new Error(`Failed to install browsers: ${error}`);
   }
 }
 

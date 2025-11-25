@@ -2,36 +2,37 @@
  * Test command - Automated E2E testing with iterative fixing
  *
  * This command:
- * 1. Loads a ticket and generates/locates Playwright tests
+ * 1. Loads a ticket OR uses custom prompt to generate Playwright tests
  * 2. Runs tests with visual regression, console/network/docker log collection
  * 3. If tests fail: analyzes errors and applies fixes
  * 4. Re-runs tests until passing or max retries reached
  * 5. Runs linting after tests pass
  *
  * Usage:
- *   kosuke test --ticket=FRONTEND-1                    # Test with auto-fix
+ *   kosuke test --ticket=FRONTEND-1                    # Test with ticket
+ *   kosuke test --prompt="Test user login flow"        # Test with custom prompt
  *   kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
- *   kosuke test --ticket=FRONTEND-1 --headed           # Show browser
+ *   kosuke test --prompt="..." --headed                # Show browser (visible window)
  *   kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visual baselines
  *   kosuke test --ticket=FRONTEND-1 --pr               # Create PR with fixes
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { generateTest } from '../utils/test-generator.js';
-import {
-  runPlaywrightTests,
-  isPlaywrightInstalled,
-  installPlaywright,
-  ensurePlaywrightConfig,
-} from '../utils/playwright-agent.js';
-import { LogCollector } from '../utils/log-collector.js';
-import { VisualTester } from '../utils/visual-tester.js';
-import { analyzeAndFix } from '../utils/error-analyzer.js';
-import { runComprehensiveLinting } from '../utils/validator.js';
-import { runWithPR } from '../utils/pr-orchestrator.js';
-import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { TestOptions, TestResult, Ticket } from '../types.js';
+import { analyzeAndFix } from '../utils/error-analyzer.js';
+import { LogCollector } from '../utils/log-collector.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
+import {
+  ensurePlaywrightConfig,
+  installPlaywright,
+  isPlaywrightInstalled,
+  runPlaywrightTests,
+} from '../utils/playwright-agent.js';
+import { runWithPR } from '../utils/pr-orchestrator.js';
+import { generateTest } from '../utils/test-generator.js';
+import { runComprehensiveLinting } from '../utils/validator.js';
+import { VisualTester } from '../utils/visual-tester.js';
 
 interface TicketsFile {
   generatedAt: string;
@@ -73,6 +74,7 @@ function findTicket(ticketsData: TicketsFile, ticketId: string): Ticket | undefi
 export async function testCore(options: TestOptions): Promise<TestResult> {
   const {
     ticket: ticketId,
+    prompt: customPrompt,
     url = 'http://localhost:3000',
     headed = false,
     debug = false,
@@ -82,6 +84,20 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
 
   const cwd = process.cwd();
   const ticketsPath = join(cwd, ticketsFile);
+
+  // Validate: must provide either ticket OR prompt (not both)
+  if (!ticketId && !customPrompt) {
+    throw new Error(
+      'Either --ticket or --prompt must be provided\n' +
+        'Examples:\n' +
+        '  kosuke test --ticket=FRONTEND-1\n' +
+        '  kosuke test --prompt="Test user login flow"'
+    );
+  }
+
+  if (ticketId && customPrompt) {
+    throw new Error('Cannot provide both --ticket and --prompt. Please use one or the other.');
+  }
 
   // Track metrics
   let totalInputTokens = 0;
@@ -97,28 +113,48 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
   let visualDiffs = 0;
   let testFilePath = '';
   let tracePath = '';
+  let testIdentifier = '';
 
   try {
-    // 1. Load and validate ticket
-    console.log('📋 Loading ticket...');
-    const ticketsData = loadTicketsFile(ticketsPath);
-    const ticket = findTicket(ticketsData, ticketId);
+    // 1. Load ticket or create from custom prompt
+    let ticket: Ticket;
 
-    if (!ticket) {
-      throw new Error(
-        `Ticket ${ticketId} not found in ${ticketsFile}\n` +
-          `Available tickets: ${ticketsData.tickets.map((t) => t.id).join(', ')}`
-      );
+    if (ticketId) {
+      // Load ticket from file
+      console.log('📋 Loading ticket...');
+      const ticketsData = loadTicketsFile(ticketsPath);
+      const foundTicket = findTicket(ticketsData, ticketId);
+
+      if (!foundTicket) {
+        throw new Error(
+          `Ticket ${ticketId} not found in ${ticketsFile}\n` +
+            `Available tickets: ${ticketsData.tickets.map((t) => t.id).join(', ')}`
+        );
+      }
+
+      if (foundTicket.status !== 'Done' && foundTicket.status !== 'InProgress') {
+        throw new Error(
+          `Ticket ${ticketId} status is "${foundTicket.status}".\n` +
+            `Tests should only be run on tickets that have been implemented (Done or InProgress).`
+        );
+      }
+
+      ticket = foundTicket;
+      testIdentifier = ticketId;
+      console.log(`   ✅ Loaded: ${ticket.id} - ${ticket.title}\n`);
+    } else {
+      // Create synthetic ticket from custom prompt
+      console.log('📋 Using custom prompt...');
+      testIdentifier = `custom-${Date.now()}`;
+      ticket = {
+        id: testIdentifier,
+        title: customPrompt!.substring(0, 80), // Truncate for title
+        description: customPrompt!,
+        estimatedEffort: 5, // Medium effort
+        status: 'InProgress',
+      };
+      console.log(`   ✅ Created test: ${testIdentifier}\n`);
     }
-
-    if (ticket.status !== 'Done' && ticket.status !== 'InProgress') {
-      throw new Error(
-        `Ticket ${ticketId} status is "${ticket.status}".\n` +
-          `Tests should only be run on tickets that have been implemented (Done or InProgress).`
-      );
-    }
-
-    console.log(`   ✅ Loaded: ${ticket.id} - ${ticket.title}\n`);
 
     // 2. Ensure Playwright is set up
     console.log('🎭 Checking Playwright setup...');
@@ -126,14 +162,25 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
       console.log('   ℹ️  Playwright not found, installing...');
       await installPlaywright(cwd);
     } else {
-      console.log('   ✅ Playwright is installed\n');
+      console.log('   ✅ Playwright is installed');
+
+      // Check if browsers are installed
+      const { areBrowsersInstalled, installBrowsers } = await import(
+        '../utils/playwright-agent.js'
+      );
+      if (!areBrowsersInstalled()) {
+        console.log('   ℹ️  Browsers not found, installing...');
+        await installBrowsers();
+      } else {
+        console.log('   ✅ Browsers are installed\n');
+      }
     }
 
     ensurePlaywrightConfig(cwd);
 
     // 3. Generate or locate test
     console.log('🎭 Checking for existing tests...');
-    testFilePath = join(cwd, '.kosuke', 'tests', `${ticketId}.spec.ts`);
+    testFilePath = join(cwd, '.kosuke', 'tests', `${testIdentifier}.spec.ts`);
 
     if (!existsSync(testFilePath)) {
       console.log('   ℹ️  No test found, generating new test...');
@@ -247,7 +294,7 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
 
       // Return success result
       return {
-        ticketId,
+        ticketId: testIdentifier,
         success: true,
         testsRun,
         testsPassed,
@@ -269,7 +316,7 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     } else {
       // Return failure result
       return {
-        ticketId,
+        ticketId: testIdentifier,
         success: false,
         testsRun,
         testsPassed,
@@ -295,7 +342,7 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     console.error(`\n❌ Test execution failed: ${errorMessage}`);
 
     return {
-      ticketId,
+      ticketId: testIdentifier || ticketId || customPrompt || 'unknown',
       success: false,
       testsRun,
       testsPassed,
@@ -322,8 +369,13 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
  * Main test command
  */
 export async function testCommand(options: TestOptions): Promise<void> {
-  const { ticket: ticketId, pr = false, noLogs = false } = options;
-  console.log(`🧪 Testing Ticket: ${ticketId}\n`);
+  const { ticket: ticketId, prompt: customPrompt, pr = false, noLogs = false } = options;
+
+  const testDescription = ticketId
+    ? `Ticket: ${ticketId}`
+    : `Prompt: "${customPrompt?.substring(0, 60)}${customPrompt && customPrompt.length > 60 ? '...' : ''}"`;
+
+  console.log(`🧪 Testing ${testDescription}\n`);
 
   // Initialize logging context
   const logContext = logger.createContext('test', { noLogs });
@@ -339,17 +391,23 @@ export async function testCommand(options: TestOptions): Promise<void> {
       throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
     }
 
+    // Determine identifier for branch/PR naming
+    const identifier = ticketId || `custom-${Date.now()}`;
+    const displayName = ticketId || 'custom prompt';
+
     // If --pr flag is provided, wrap with PR workflow
     if (pr) {
       const { result: testResult, prInfo } = await runWithPR(
         {
-          branchPrefix: `test/fix-${ticketId}`,
+          branchPrefix: `test/fix-${identifier}`,
           baseBranch: options.baseBranch,
-          commitMessage: `test: fix issues found in ${ticketId}`,
-          prTitle: `test: Fix issues in ${ticketId}`,
-          prBody: `## 🧪 Test Fixes for ${ticketId}
+          commitMessage: `test: fix issues found in ${displayName}`,
+          prTitle: `test: Fix issues in ${displayName}`,
+          prBody: `## 🧪 Test Fixes for ${displayName}
 
-This PR contains automated fixes for issues found during E2E testing of ticket ${ticketId}.
+This PR contains automated fixes for issues found during E2E testing${ticketId ? ` of ticket ${ticketId}` : ''}.
+
+${customPrompt ? `### 📝 Custom Test Prompt\n${customPrompt}\n` : ''}
 
 ### 📊 Test Results
 - Tests run: ${0} (will be filled by result)
@@ -358,7 +416,7 @@ This PR contains automated fixes for issues found during E2E testing of ticket $
 
 ---
 
-🤖 *Generated by Kosuke CLI (\`kosuke test --ticket=${ticketId} --pr\`)*`,
+🤖 *Generated by Kosuke CLI (\`kosuke test ${ticketId ? `--ticket=${ticketId}` : '--prompt="..."'} --pr\`)*`,
         },
         async () => {
           const result = await testCore(options);
