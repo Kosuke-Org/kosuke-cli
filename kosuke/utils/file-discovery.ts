@@ -67,17 +67,17 @@ export async function discoverFiles(options: DiscoverFilesOptions = {}): Promise
   // Load .kosukeignore patterns
   const kosukeignorePatterns = readKosukeignore(cwd);
 
-  // Always exclude these
+  // Always exclude these (gitignore-style patterns)
   const alwaysExclude = [
-    'node_modules/**',
-    '.next/**',
-    'dist/**',
-    'build/**',
-    '**/*.tsbuildinfo',
-    'drizzle/**',
-    '__pycache__/**',
+    'node_modules',
+    '.next',
+    'dist',
+    'build',
+    '*.tsbuildinfo',
+    'drizzle',
+    '__pycache__',
     '*.pyc',
-    '.pytest_cache/**',
+    '.pytest_cache',
     'engine/uv.lock',
   ];
 
@@ -88,7 +88,6 @@ export async function discoverFiles(options: DiscoverFilesOptions = {}): Promise
   for (const pattern of includePatterns) {
     const files = await glob(pattern, {
       cwd,
-      ignore: alwaysExclude,
       nodir: true,
     });
     allFiles.push(...files);

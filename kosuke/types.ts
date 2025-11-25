@@ -35,6 +35,7 @@ export interface AnalyseOptions {
 export interface LintOptions {
   pr?: boolean;
   baseBranch?: string;
+  directory?: string; // Directory to run linting in (default: cwd)
   noLogs?: boolean;
 }
 
@@ -132,17 +133,20 @@ export interface ShipOptions {
   commit?: boolean; // Commit and push to current branch
   pr?: boolean; // Create pull request (new branch)
   baseBranch?: string; // Base branch for PR
-  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   test?: boolean; // Run tests after implementation
+  directory?: string; // Directory to run ship in (default: cwd)
   noLogs?: boolean;
 }
 
 export interface BuildOptions {
-  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  directory?: string; // Directory to run build in (default: cwd)
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   noLogs?: boolean;
 }
 
 export interface ReviewOptions {
+  directory?: string; // Directory to review (default: cwd)
   noLogs?: boolean;
 }
 
@@ -185,7 +189,8 @@ export interface TestOptions {
   debug?: boolean; // Enable Playwright inspector
   updateBaseline?: boolean; // Update visual baselines
   maxRetries?: number; // Max fix-retest iterations (default: 3)
-  ticketsFile?: string; // Path to tickets.json (default: tickets.json)
+  ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
+  directory?: string; // Directory to run tests in (default: cwd)
   pr?: boolean; // Create pull request with fixes
   baseBranch?: string; // Base branch for PR
   noLogs?: boolean;

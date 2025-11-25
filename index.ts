@@ -85,6 +85,7 @@ async function main() {
         const options = {
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
+          directory: args.find((arg) => arg.startsWith('--directory='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await lintCommand(options);
@@ -119,13 +120,18 @@ async function main() {
         const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
         if (!ticketArg) {
           console.error('❌ --ticket flag is required\n');
-          console.log('Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr]');
+          console.log(
+            'Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr] [--directory=<path>]'
+          );
           console.log('\nExamples:');
           console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
           console.log('  kosuke ship --ticket=BACKEND-2 --review      # With review');
           console.log('  kosuke ship --ticket=FRONTEND-1 --test       # With testing');
           console.log('  kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch');
           console.log('  kosuke ship --ticket=BACKEND-3 --pr          # Create PR (new branch)');
+          console.log(
+            '  kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory'
+          );
           process.exit(1);
         }
 
@@ -137,6 +143,9 @@ async function main() {
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await shipCommand(options);
@@ -145,6 +154,9 @@ async function main() {
 
       case 'build': {
         const options = {
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
@@ -164,13 +176,18 @@ async function main() {
         const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
         if (!ticketArg) {
           console.error('❌ --ticket flag is required\n');
-          console.log('Usage: kosuke test --ticket=FRONTEND-1 [--url=URL] [--headed] [--pr]');
+          console.log(
+            'Usage: kosuke test --ticket=FRONTEND-1 [--url=URL] [--headed] [--pr] [--directory=<path>]'
+          );
           console.log('\nExamples:');
           console.log('  kosuke test --ticket=FRONTEND-1                    # Test with auto-fix');
           console.log('  kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000');
           console.log('  kosuke test --ticket=FRONTEND-1 --headed           # Show browser');
           console.log('  kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals');
           console.log('  kosuke test --ticket=FRONTEND-1 --pr               # Create PR');
+          console.log(
+            '  kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory'
+          );
           process.exit(1);
         }
 
@@ -184,6 +201,9 @@ async function main() {
             args.find((arg) => arg.startsWith('--max-retries='))?.split('=')[1] || '3'
           ),
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           pr: args.includes('--pr'),
           baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
@@ -249,11 +269,13 @@ COMMANDS:
     Options:
       --pr                  Create a pull request with fixes
       --base-branch=<name>  Base branch for PR (default: current branch)
+      --directory=<path>    Directory to run linting in (default: current directory)
 
     Examples:
       kosuke lint                          # Local fixes only
       kosuke lint --pr                     # Create PR with fixes
       kosuke lint --pr --base-branch=main
+      kosuke lint --directory=./my-project # Run lint in specific directory
 
   requirements
     Interactive requirements gathering with Claude AI
@@ -307,7 +329,9 @@ COMMANDS:
       --commit              Commit and push to current branch
       --pr                  Create new branch and pull request (mutually exclusive with --commit)
       --base-branch=<name>  Base branch for PR (default: current branch)
-      --tickets=<file>      Path to tickets file (default: tickets.json)
+      --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
+      --directory=<path>    Directory to run ship in (default: current directory)
+      --dir=<path>          Alias for --directory
 
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
@@ -316,6 +340,7 @@ COMMANDS:
       kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch
       kosuke ship --ticket=BACKEND-3 --pr          # Create new branch + PR
       kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
+      kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
@@ -324,7 +349,9 @@ COMMANDS:
     Frontend tickets automatically include E2E testing
 
     Options:
-      --tickets=<file>      Path to tickets file (default: tickets.json)
+      --directory=<path>    Directory to run build in (default: current directory)
+      --dir=<path>          Alias for --directory
+      --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
@@ -332,6 +359,7 @@ COMMANDS:
       gh pr create                            # Create PR manually
 
       kosuke build --tickets=custom.json      # Use custom tickets file
+      kosuke build --directory=./my-project   # Run build in specific directory
 
     Note: If a ticket fails, fix the issue and run build again to resume
 
@@ -355,7 +383,9 @@ COMMANDS:
       --debug               Enable Playwright inspector
       --update-baseline     Update visual regression baselines
       --max-retries=<N>     Maximum fix-retest iterations (default: 3)
-      --tickets=<file>      Path to tickets file (default: tickets.json)
+      --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
+      --directory=<path>    Directory to run tests in (default: current directory)
+      --dir=<path>          Alias for --directory
       --pr                  Create pull request with fixes
       --base-branch=<name>  Base branch for PR (default: current branch)
 
@@ -366,6 +396,7 @@ COMMANDS:
       kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals
       kosuke test --ticket=FRONTEND-1 --max-retries=5    # More attempts
       kosuke test --ticket=FRONTEND-1 --pr               # Create PR with fixes
+      kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory
 
 GLOBAL OPTIONS:
 

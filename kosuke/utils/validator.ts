@@ -52,8 +52,7 @@ export function readPackageJsonScripts(cwd: string = process.cwd()): PackageJson
 /**
  * Run formatting using detected package manager and scripts
  */
-export async function runFormat(): Promise<ValidationResult> {
-  const cwd = process.cwd();
+export async function runFormat(cwd: string = process.cwd()): Promise<ValidationResult> {
   const scripts = readPackageJsonScripts(cwd);
 
   if (!scripts) {
@@ -94,8 +93,7 @@ export async function runFormat(): Promise<ValidationResult> {
 /**
  * Run linting using detected package manager and scripts
  */
-export async function runLint(): Promise<ValidationResult> {
-  const cwd = process.cwd();
+export async function runLint(cwd: string = process.cwd()): Promise<ValidationResult> {
   const scripts = readPackageJsonScripts(cwd);
 
   if (!scripts) {
@@ -139,8 +137,7 @@ export async function runLint(): Promise<ValidationResult> {
 /**
  * Run TypeScript type checking using detected package manager
  */
-export async function runTypecheck(): Promise<ValidationResult> {
-  const cwd = process.cwd();
+export async function runTypecheck(cwd: string = process.cwd()): Promise<ValidationResult> {
   const scripts = readPackageJsonScripts(cwd);
 
   if (!scripts) {
@@ -181,8 +178,7 @@ export async function runTypecheck(): Promise<ValidationResult> {
 /**
  * Run tests using package.json test script
  */
-export async function runTests(): Promise<ValidationResult> {
-  const cwd = process.cwd();
+export async function runTests(cwd: string = process.cwd()): Promise<ValidationResult> {
   const scripts = readPackageJsonScripts(cwd);
 
   if (!scripts || !scripts.test) {
@@ -219,14 +215,16 @@ interface ValidationStep {
 /**
  * Run comprehensive linting and fixing
  */
-export async function runComprehensiveLinting(): Promise<{ success: boolean; fixCount: number }> {
+export async function runComprehensiveLinting(
+  cwd: string = process.cwd()
+): Promise<{ success: boolean; fixCount: number }> {
   console.log('\n🔍 Running comprehensive code quality checks...\n');
 
   const validationSteps: ValidationStep[] = [
-    { name: '🎨 Format', run: runFormat },
-    { name: '🔍 Lint', run: runLint },
-    { name: '🔎 TypeCheck', run: runTypecheck },
-    { name: '🧪 Tests', run: runTests },
+    { name: '🎨 Format', run: () => runFormat(cwd) },
+    { name: '🔍 Lint', run: () => runLint(cwd) },
+    { name: '🔎 TypeCheck', run: () => runTypecheck(cwd) },
+    { name: '🧪 Tests', run: () => runTests(cwd) },
   ];
 
   let totalFixCount = 0;
@@ -268,7 +266,7 @@ export async function runComprehensiveLinting(): Promise<{ success: boolean; fix
       console.log(`${'='.repeat(60)}`);
 
       const { fixCodeQualityErrors } = await import('../commands/lint.js');
-      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '');
+      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '', cwd);
 
       if (!fixApplied) {
         console.log(`\n⚠️  No fixes were applied by Claude for ${step.name}`);

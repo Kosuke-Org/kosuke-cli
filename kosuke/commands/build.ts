@@ -16,8 +16,8 @@
  *   gh pr create
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join, resolve } from 'path';
 import { shipCommand } from './ship.js';
 import type { BuildOptions, Ticket } from '../types.js';
 
@@ -92,8 +92,28 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       throw new Error('GITHUB_TOKEN environment variable is required for build command');
     }
 
-    const { ticketsFile = 'tickets.json', noLogs = false } = options;
-    const cwd = process.cwd();
+    const { directory, ticketsFile = 'tickets.json', noLogs = false } = options;
+
+    // 1. Validate and resolve directory
+    const cwd = directory ? resolve(directory) : process.cwd();
+
+    if (!existsSync(cwd)) {
+      throw new Error(
+        `Directory not found: ${cwd}\n` +
+          `Please provide a valid directory using --directory=<path>\n` +
+          `Example: kosuke build --directory=./my-project`
+      );
+    }
+
+    const stats = statSync(cwd);
+    if (!stats.isDirectory()) {
+      throw new Error(
+        `Path is not a directory: ${cwd}\n` + `Please provide a valid directory path.`
+      );
+    }
+
+    console.log(`📁 Using project directory: ${cwd}\n`);
+
     const ticketsPath = join(cwd, ticketsFile);
 
     // 1. Load tickets
@@ -134,6 +154,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
           commit: true,
           ticketsFile,
           test: isFrontendTicket,
+          directory: cwd,
           noLogs,
         });
 

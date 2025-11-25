@@ -5,17 +5,24 @@
 import simpleGit, { type SimpleGit } from 'simple-git';
 import type { GitInfo } from '../types.js';
 
-const git: SimpleGit = simpleGit();
-
 let gitIdentityConfigured = false;
+
+/**
+ * Get SimpleGit instance for the given directory
+ */
+function getGitInstance(cwd?: string): SimpleGit {
+  return cwd ? simpleGit(cwd) : simpleGit();
+}
 
 /**
  * Configure git identity for commits (required in CI environments)
  */
-async function ensureGitIdentity(): Promise<void> {
+async function ensureGitIdentity(cwd?: string): Promise<void> {
   if (gitIdentityConfigured) {
     return;
   }
+
+  const git = getGitInstance(cwd);
 
   try {
     // Check if git identity is already configured
@@ -47,7 +54,8 @@ async function ensureGitIdentity(): Promise<void> {
 /**
  * Get current repository info from git remote
  */
-export async function getCurrentRepo(): Promise<GitInfo> {
+export async function getCurrentRepo(cwd?: string): Promise<GitInfo> {
+  const git = getGitInstance(cwd);
   const remotes = await git.getRemotes(true);
   const origin = remotes.find((r) => r.name === 'origin');
 
@@ -70,9 +78,9 @@ export async function getCurrentRepo(): Promise<GitInfo> {
 /**
  * Detect if running in kosuke-template repository itself
  */
-export async function isKosukeTemplateRepo(): Promise<boolean> {
+export async function isKosukeTemplateRepo(cwd?: string): Promise<boolean> {
   try {
-    const { owner, repo } = await getCurrentRepo();
+    const { owner, repo } = await getCurrentRepo(cwd);
     return owner === 'Kosuke-Org' && repo === 'kosuke-template';
   } catch {
     return false;
@@ -82,7 +90,12 @@ export async function isKosukeTemplateRepo(): Promise<boolean> {
 /**
  * Create and checkout a new branch
  */
-export async function createBranch(branchName: string, baseBranch: string = 'main'): Promise<void> {
+export async function createBranch(
+  branchName: string,
+  baseBranch: string = 'main',
+  cwd?: string
+): Promise<void> {
+  const git = getGitInstance(cwd);
   await git.checkout(baseBranch);
   await git.pull('origin', baseBranch);
 
@@ -102,8 +115,9 @@ export async function createBranch(branchName: string, baseBranch: string = 'mai
 /**
  * Commit changes with a message
  */
-export async function commit(message: string): Promise<void> {
-  await ensureGitIdentity();
+export async function commit(message: string, cwd?: string): Promise<void> {
+  const git = getGitInstance(cwd);
+  await ensureGitIdentity(cwd);
   await git.add(['-A']);
   await git.commit(message, ['--no-verify']);
 }
@@ -111,14 +125,16 @@ export async function commit(message: string): Promise<void> {
 /**
  * Push current branch to origin
  */
-export async function push(branchName: string): Promise<void> {
+export async function push(branchName: string, cwd?: string): Promise<void> {
+  const git = getGitInstance(cwd);
   await git.push('origin', branchName, ['--set-upstream']);
 }
 
 /**
  * Get the current branch name
  */
-export async function getCurrentBranch(): Promise<string> {
+export async function getCurrentBranch(cwd?: string): Promise<string> {
+  const git = getGitInstance(cwd);
   const branch = await git.revparse(['--abbrev-ref', 'HEAD']);
   return branch.trim();
 }
@@ -126,8 +142,9 @@ export async function getCurrentBranch(): Promise<string> {
 /**
  * Commit and push to current branch (no branch creation, no PR)
  */
-export async function commitAndPushCurrentBranch(message: string): Promise<void> {
-  await ensureGitIdentity();
+export async function commitAndPushCurrentBranch(message: string, cwd?: string): Promise<void> {
+  const git = getGitInstance(cwd);
+  await ensureGitIdentity(cwd);
 
   // Check if there are changes to commit
   const status = await git.status();
@@ -141,14 +158,15 @@ export async function commitAndPushCurrentBranch(message: string): Promise<void>
   await git.commit(message, ['--no-verify']);
 
   // Push to current branch
-  const currentBranch = await getCurrentBranch();
+  const currentBranch = await getCurrentBranch(cwd);
   await git.push('origin', currentBranch);
 }
 
 /**
  * Get git diff of current changes (staged and unstaged)
  */
-export async function getGitDiff(): Promise<string> {
+export async function getGitDiff(cwd?: string): Promise<string> {
+  const git = getGitInstance(cwd);
   try {
     // Get diff of both staged and unstaged changes
     const diff = await git.diff(['HEAD']);
@@ -162,7 +180,8 @@ export async function getGitDiff(): Promise<string> {
 /**
  * Check if there are any uncommitted changes
  */
-export async function hasUncommittedChanges(): Promise<boolean> {
+export async function hasUncommittedChanges(cwd?: string): Promise<boolean> {
+  const git = getGitInstance(cwd);
   const status = await git.status();
   return status.files.length > 0;
 }

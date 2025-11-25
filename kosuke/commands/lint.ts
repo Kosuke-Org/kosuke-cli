@@ -27,7 +27,7 @@ interface LintFixResult {
 /**
  * Run tests using package.json test script
  */
-async function runTests(): Promise<{
+async function runTests(cwd: string = process.cwd()): Promise<{
   success: boolean;
   error?: string;
   warning?: string;
@@ -35,7 +35,7 @@ async function runTests(): Promise<{
 }> {
   const { readPackageJsonScripts, detectPackageManager } = await import('../utils/validator.js');
 
-  const scripts = readPackageJsonScripts();
+  const scripts = readPackageJsonScripts(cwd);
   if (!scripts || !scripts.test) {
     return {
       success: true,
@@ -43,12 +43,12 @@ async function runTests(): Promise<{
     };
   }
 
-  const packageManager = detectPackageManager();
+  const packageManager = detectPackageManager(cwd);
   const command = `${packageManager} run test`;
 
   try {
     const output = execSync(command, {
-      cwd: process.cwd(),
+      cwd,
       encoding: 'utf-8',
       stdio: 'pipe',
     });
@@ -65,7 +65,7 @@ async function runTests(): Promise<{
 /**
  * Run knip to check for unused exports
  */
-async function runKnip(): Promise<{
+async function runKnip(cwd: string = process.cwd()): Promise<{
   success: boolean;
   error?: string;
   warning?: string;
@@ -73,7 +73,7 @@ async function runKnip(): Promise<{
 }> {
   const { readPackageJsonScripts, detectPackageManager } = await import('../utils/validator.js');
 
-  const scripts = readPackageJsonScripts();
+  const scripts = readPackageJsonScripts(cwd);
   if (!scripts || !scripts.knip) {
     return {
       success: true,
@@ -81,12 +81,12 @@ async function runKnip(): Promise<{
     };
   }
 
-  const packageManager = detectPackageManager();
+  const packageManager = detectPackageManager(cwd);
   const command = `${packageManager} run knip`;
 
   try {
     const output = execSync(command, {
-      cwd: process.cwd(),
+      cwd,
       encoding: 'utf-8',
       stdio: 'pipe',
     });
@@ -104,10 +104,14 @@ async function runKnip(): Promise<{
  * Run Claude to fix code quality errors
  * Exported so other commands can use it
  */
-export async function fixCodeQualityErrors(stepName: string, errors: string): Promise<boolean> {
+export async function fixCodeQualityErrors(
+  stepName: string,
+  errors: string,
+  cwd: string = process.cwd()
+): Promise<boolean> {
   console.log(`\n🤖 Using Claude to fix ${stepName} errors...\n`);
 
-  const workspaceRoot = process.cwd();
+  const workspaceRoot = cwd;
 
   // System prompt
   const systemPrompt = `You are a code quality expert specialized in fixing ${stepName} errors.
@@ -158,24 +162,27 @@ Start by reading the files with errors and fixing them one by one.`;
 /**
  * Legacy export for backward compatibility
  */
-export async function fixLintErrors(lintErrors: string): Promise<boolean> {
-  return fixCodeQualityErrors('linting', lintErrors);
+export async function fixLintErrors(
+  lintErrors: string,
+  cwd: string = process.cwd()
+): Promise<boolean> {
+  return fixCodeQualityErrors('linting', lintErrors, cwd);
 }
 
 /**
  * Core comprehensive validation and fixing logic (git-agnostic)
  * Used internally by lintCommand
  */
-async function fixLintErrorsCore(): Promise<LintFixResult> {
+async function fixLintErrorsCore(cwd: string = process.cwd()): Promise<LintFixResult> {
   console.log('🔍 Running comprehensive code quality checks...\n');
 
   // Define all validation steps
   const validationSteps: ValidationStep[] = [
-    { name: '🎨 Format', run: runFormat, fixable: true },
-    { name: '🔍 Lint', run: runLint, fixable: true },
-    { name: '🔎 TypeCheck', run: runTypecheck, fixable: true },
-    { name: '🧪 Tests', run: runTests, fixable: true },
-    { name: '🔪 Knip', run: runKnip, fixable: true },
+    { name: '🎨 Format', run: () => runFormat(cwd), fixable: true },
+    { name: '🔍 Lint', run: () => runLint(cwd), fixable: true },
+    { name: '🔎 TypeCheck', run: () => runTypecheck(cwd), fixable: true },
+    { name: '🧪 Tests', run: () => runTests(cwd), fixable: true },
+    { name: '🔪 Knip', run: () => runKnip(cwd), fixable: true },
   ];
 
   const stepsFixed: string[] = [];
@@ -224,7 +231,7 @@ async function fixLintErrorsCore(): Promise<LintFixResult> {
       console.log(`🔄 ${step.name} Fix Attempt ${attemptCount}/${maxAttempts}`);
       console.log(`${'='.repeat(60)}`);
 
-      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '');
+      const fixApplied = await fixCodeQualityErrors(step.name, result.error || '', cwd);
 
       if (!fixApplied) {
         console.log(`\n⚠️  No fixes were applied by Claude for ${step.name}`);
@@ -281,6 +288,31 @@ export async function lintCommand(options: LintOptions = {}): Promise<void> {
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
 
+    // Resolve directory
+    const { resolve } = await import('path');
+    const { existsSync, statSync } = await import('fs');
+    const cwd = options.directory ? resolve(options.directory) : process.cwd();
+
+    // Validate directory if provided
+    if (options.directory) {
+      if (!existsSync(cwd)) {
+        throw new Error(
+          `Directory not found: ${cwd}\n` +
+            `Please provide a valid directory using --directory=<path>\n` +
+            `Example: kosuke lint --directory=./my-project`
+        );
+      }
+
+      const stats = statSync(cwd);
+      if (!stats.isDirectory()) {
+        throw new Error(
+          `Path is not a directory: ${cwd}\n` + `Please provide a valid directory path.`
+        );
+      }
+
+      console.log(`📁 Using project directory: ${cwd}\n`);
+    }
+
     // If --pr flag is provided, wrap with PR workflow
     if (options.pr) {
       const { result: fixResult, prInfo } = await runWithPR(
@@ -306,8 +338,9 @@ All validation steps passed! Code quality issues have been automatically fixed b
 ---
 
 🤖 *Generated by Kosuke CLI (\`kosuke lint --pr\`)*`,
+          cwd,
         },
-        fixLintErrorsCore
+        () => fixLintErrorsCore(cwd)
       );
 
       console.log('\n✅ Code quality check complete!');
@@ -319,7 +352,7 @@ All validation steps passed! Code quality issues have been automatically fixed b
       console.log(`🔗 PR: ${prInfo.prUrl}`);
     } else {
       // Run core logic without PR
-      const result = await fixLintErrorsCore();
+      const result = await fixLintErrorsCore(cwd);
 
       console.log('\n✅ Code quality check complete!');
       console.log(`📊 Attempts: ${result.attempts}`);

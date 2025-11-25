@@ -13,10 +13,9 @@
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, resolve } from 'path';
 import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
-import { ensureRepoReady } from '../utils/repository-manager.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
 import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { reviewCore } from './review.js';
@@ -112,7 +111,22 @@ function loadClaudeRules(cwd: string = process.cwd()): string {
 /**
  * Build system prompt for ticket implementation
  */
-function buildImplementationPrompt(ticket: Ticket, claudeRules: string, repoPath: string): string {
+function buildImplementationPrompt(ticket: Ticket, claudeRules: string): string {
+  const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
+
+  const schemaMigrationInstructions = isSchemaTicket
+    ? `
+
+**Database Schema Changes (CRITICAL FOR SCHEMA TICKETS):**
+This is a SCHEMA ticket. After making changes to database schema files:
+1. Run \`bun run db:generate\` to generate Drizzle migrations
+2. Run \`bun run db:migrate\` to apply migrations to the database
+3. Verify migration files were created in lib/db/migrations/
+4. Handle any migration errors before proceeding
+5. Ensure schema changes follow Drizzle ORM best practices from CLAUDE.md
+`
+    : '';
+
   return `You are an expert software engineer implementing a feature ticket.
 
 **Your Task:**
@@ -127,25 +141,21 @@ ${ticket.description}
 **Project Rules (CLAUDE.md):**
 ${claudeRules}
 
-**Context:**
-You have access to the kosuke-template repository at: ${repoPath}
-Use this to understand implementation patterns, but DO NOT copy code directly.
-Adapt patterns to fit the current project's needs.
-
 **Implementation Requirements:**
 1. Follow ALL guidelines in CLAUDE.md
-2. Use appropriate patterns from kosuke-template as reference
+2. Explore the current codebase to understand existing patterns and architecture
 3. Write clean, well-documented code
 4. Ensure TypeScript type safety
 5. Add error handling where appropriate
-6. Make the implementation production-ready
+6. Make the implementation production-ready${schemaMigrationInstructions}
 
 **Critical Instructions:**
 - Read relevant files in the current workspace to understand the codebase
+- Learn from existing code patterns and conventions
 - Implement ALL requirements from the ticket description
 - Use search_replace or write tools to create/modify files
 - Ensure acceptance criteria are met
-- Do not make assumptions - ask for clarification if needed through comments
+- Maintain consistency with the existing codebase style
 
 Begin by exploring the current codebase, then implement the ticket systematically.`;
 }
@@ -194,8 +204,36 @@ Begin by reading recent changes and reviewing them against the standards.`;
  * Core ship logic (git-agnostic, reusable)
  */
 export async function shipCore(options: ShipOptions): Promise<ShipResult> {
-  const { ticket: ticketId, review = false, test = false, ticketsFile = 'tickets.json' } = options;
-  const cwd = process.cwd();
+  const {
+    ticket: ticketId,
+    review = false,
+    test = false,
+    ticketsFile = 'tickets.json',
+    directory,
+  } = options;
+
+  // 1. Validate and resolve directory
+  const cwd = directory ? resolve(directory) : process.cwd();
+
+  if (directory) {
+    if (!existsSync(cwd)) {
+      throw new Error(
+        `Directory not found: ${cwd}\n` +
+          `Please provide a valid directory using --directory=<path>\n` +
+          `Example: kosuke ship --ticket=SCHEMA-1 --directory=./my-project`
+      );
+    }
+
+    const stats = statSync(cwd);
+    if (!stats.isDirectory()) {
+      throw new Error(
+        `Path is not a directory: ${cwd}\n` + `Please provide a valid directory path.`
+      );
+    }
+
+    console.log(`📁 Using project directory: ${cwd}\n`);
+  }
+
   const ticketsPath = join(cwd, ticketsFile);
 
   // 1. Load and validate ticket
@@ -229,10 +267,8 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
   const claudeRules = loadClaudeRules(cwd);
   console.log(`   ✅ Loaded rules (${claudeRules.length} characters)\n`);
 
-  // 4. Fetch kosuke-template for context
-  console.log('📥 Fetching kosuke-template for context...');
-  const repoInfo = await ensureRepoReady('Kosuke-Org/kosuke-template');
-  console.log(`   ✅ Template repository ready at ${repoInfo.localPath}\n`);
+  // 4. Context ready (using current working directory)
+  console.log('📁 Working in current directory context\n');
 
   // Track metrics
   let totalInputTokens = 0;
@@ -249,7 +285,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`🚀 Phase 1: Implementation`);
     console.log(`${'='.repeat(60)}\n`);
 
-    const systemPrompt = buildImplementationPrompt(ticket, claudeRules, repoInfo.localPath);
+    const systemPrompt = buildImplementationPrompt(ticket, claudeRules);
 
     const implementationResult = await runAgent(`Implement ticket ${ticketId}: ${ticket.title}`, {
       systemPrompt,
@@ -273,7 +309,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`🔧 Phase 2: Linting & Quality Checks`);
     console.log(`${'='.repeat(60)}\n`);
 
-    const lintResult = await runComprehensiveLinting();
+    const lintResult = await runComprehensiveLinting(cwd);
     console.log(`\n✅ Linting completed (${lintResult.fixCount} fixes applied)`);
 
     // 7. Review phase (if review flag is set)
@@ -308,7 +344,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       // Run linting again after review fixes
       if (reviewFixCount > 0) {
         console.log('\n🔧 Running linting after review fixes...');
-        await runComprehensiveLinting();
+        await runComprehensiveLinting(cwd);
       }
 
       reviewPerformed = true;
@@ -324,6 +360,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       const testResult = await testCore({
         ticket: ticketId,
         ticketsFile,
+        directory: cwd,
       });
 
       testFixCount = testResult.fixesApplied;
@@ -393,7 +430,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
 /**
  * Review git diff after implementation
  */
-async function reviewGitDiff(): Promise<{
+async function reviewGitDiff(cwd?: string): Promise<{
   fixCount: number;
   cost: number;
   tokensUsed: {
@@ -407,7 +444,7 @@ async function reviewGitDiff(): Promise<{
   console.log(`🔍 Reviewing Git Diff Against CLAUDE.md`);
   console.log(`${'='.repeat(60)}\n`);
 
-  const result = await reviewCore({});
+  const result = await reviewCore({ directory: cwd });
 
   return {
     fixCount: result.fixesApplied,
@@ -420,8 +457,11 @@ async function reviewGitDiff(): Promise<{
  * Main ship command
  */
 export async function shipCommand(options: ShipOptions): Promise<void> {
-  const { ticket: ticketId, commit = false, pr = false, noLogs = false } = options;
+  const { ticket: ticketId, commit = false, pr = false, directory, noLogs = false } = options;
   console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
+
+  // Resolve directory (for git operations and reviewGitDiff)
+  const cwd = directory ? resolve(directory) : process.cwd();
 
   // Initialize logging context
   const logContext = logger.createContext('ship', { noLogs });
@@ -472,6 +512,7 @@ Implements ticket **${ticketId}** from tickets.json.
 ---
 
 🤖 *Generated by Kosuke CLI (\`kosuke ship --ticket=${ticketId} ${options.review ? '--review ' : ''}--pr\`)*`,
+          cwd,
         },
         async () => {
           // Run core implementation
@@ -483,7 +524,7 @@ Implements ticket **${ticketId}** from tickets.json.
             result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
 
           // Review git diff before committing
-          const diffReview = await reviewGitDiff();
+          const diffReview = await reviewGitDiff(cwd);
           diffReviewCost = diffReview.cost;
           diffReviewFixCount = diffReview.fixCount;
 
@@ -523,7 +564,7 @@ Implements ticket **${ticketId}** from tickets.json.
         result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
 
       // Review git diff before committing
-      const diffReview = await reviewGitDiff();
+      const diffReview = await reviewGitDiff(cwd);
 
       // Track diff review metrics
       logger.trackTokens(logContext, diffReview.tokensUsed);
@@ -531,7 +572,7 @@ Implements ticket **${ticketId}** from tickets.json.
 
       // Commit and push to current branch
       console.log('\n📝 Committing and pushing to current branch...');
-      await commitAndPushCurrentBranch(`feat: implement ${ticketId}`);
+      await commitAndPushCurrentBranch(`feat: implement ${ticketId}`, cwd);
       console.log('   ✅ Changes committed and pushed\n');
 
       console.log('\n✅ Ship completed successfully!');

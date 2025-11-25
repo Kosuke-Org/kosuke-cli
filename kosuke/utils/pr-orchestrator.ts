@@ -33,6 +33,9 @@ interface PRWorkflowOptions {
 
   /** Number of batches to process (default: 1 for single commit) */
   batchCount?: number;
+
+  /** Directory to run git operations in (default: cwd) */
+  cwd?: string;
 }
 
 interface PRWorkflowResult {
@@ -54,17 +57,18 @@ export async function runWithPR<T>(
     throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
   }
 
-  const git: SimpleGit = simpleGit();
+  const { cwd } = options;
+  const git: SimpleGit = cwd ? simpleGit(cwd) : simpleGit();
 
   // Get base branch (current branch before creating feature branch)
-  const baseBranch = options.baseBranch || (await getCurrentBranch());
+  const baseBranch = options.baseBranch || (await getCurrentBranch(cwd));
   console.log(`📍 Base branch: ${baseBranch}\n`);
 
   // Create working branch with unique name
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
   const branchName = `${options.branchPrefix}/${timestamp}`;
   console.log(`🌿 Creating branch: ${branchName}\n`);
-  await createBranch(branchName, baseBranch);
+  await createBranch(branchName, baseBranch, cwd);
 
   // Execute core logic
   const result = await coreLogic();
@@ -80,17 +84,17 @@ export async function runWithPR<T>(
   console.log('\n📝 Committing changes...');
   const commitMsg =
     typeof options.commitMessage === 'function' ? options.commitMessage(0) : options.commitMessage;
-  await commit(commitMsg);
+  await commit(commitMsg, cwd);
   console.log('   ✅ Changes committed\n');
 
   // Push branch
   console.log('📤 Pushing branch...');
-  await push(branchName);
+  await push(branchName, cwd);
   console.log('   ✅ Branch pushed\n');
 
   // Create PR
   console.log('📋 Creating pull request...');
-  const { owner, repo } = await getCurrentRepo();
+  const { owner, repo } = await getCurrentRepo(cwd);
 
   const prUrl = await createPullRequest({
     owner,
@@ -127,17 +131,18 @@ export async function runWithPRBatched<T>(
     throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
   }
 
-  const git: SimpleGit = simpleGit();
+  const { cwd } = options;
+  const git: SimpleGit = cwd ? simpleGit(cwd) : simpleGit();
 
   // Get base branch
-  const baseBranch = options.baseBranch || (await getCurrentBranch());
+  const baseBranch = options.baseBranch || (await getCurrentBranch(cwd));
   console.log(`📍 Base branch: ${baseBranch}\n`);
 
   // Create working branch
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('.')[0];
   const branchName = `${options.branchPrefix}/${timestamp}`;
   console.log(`🌿 Creating branch: ${branchName}\n`);
-  await createBranch(branchName, baseBranch);
+  await createBranch(branchName, baseBranch, cwd);
 
   // Process each batch
   const results: T[] = [];
@@ -174,7 +179,7 @@ export async function runWithPRBatched<T>(
       typeof options.commitMessage === 'function'
         ? options.commitMessage(i)
         : options.commitMessage;
-    await commit(commitMsg);
+    await commit(commitMsg, cwd);
     commitsCreated++;
     console.log('   ✅ Batch committed');
 
@@ -192,12 +197,12 @@ export async function runWithPRBatched<T>(
 
   // Push all commits
   console.log(`\n📤 Pushing ${commitsCreated} commit(s)...`);
-  await push(branchName);
+  await push(branchName, cwd);
   console.log('   ✅ All commits pushed\n');
 
   // Create PR
   console.log('📋 Creating pull request...');
-  const { owner, repo } = await getCurrentRepo();
+  const { owner, repo } = await getCurrentRepo(cwd);
 
   const prUrl = await createPullRequest({
     owner,
