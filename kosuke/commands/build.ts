@@ -2,20 +2,19 @@
  * Build command - Batch process all tickets from tickets.json
  *
  * This command processes all "Todo" and "Error" tickets sequentially,
- * implementing each one using the ship command.
- * By default, each ticket is committed individually to the current branch.
+ * implementing each one using the ship command and committing individually.
  * Frontend tickets automatically include the --test flag.
  * All tickets automatically include the --review flag for quality assurance.
  *
  * Usage:
- *   kosuke build                           # Process and commit all tickets with review
- *   kosuke build --no-commit               # Process tickets without committing
+ *   kosuke build                           # Process and auto-commit all tickets
+ *   kosuke build --ask-commit              # Ask before committing each ticket
+ *   kosuke build --ask-confirm             # Ask before processing each ticket
  *   kosuke build --reset                   # Reset all tickets to "Todo" and process from scratch
- *   kosuke build --confirm                 # Ask for confirmation before each ticket
  *   kosuke build --tickets=path/to/tickets.json
  *   kosuke build --db-url=postgres://user:pass@host:5432/db
  *
- * Note: Create a feature branch before running build (if committing):
+ * Note: Create a feature branch before running build:
  *   git checkout -b feat/implement-tickets
  *   kosuke build
  *   gh pr create
@@ -24,6 +23,7 @@
 import { existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import * as readline from 'readline';
+import simpleGit from 'simple-git';
 import type { BuildOptions, Ticket } from '../types.js';
 import { loadTicketsFile, saveTicketsFile, type TicketsFile } from '../utils/tickets-manager.js';
 import { shipCommand } from './ship.js';
@@ -75,6 +75,22 @@ function getTicketsToProcess(ticketsData: TicketsFile): Ticket[] {
 }
 
 /**
+ * Commit ticket changes to current branch
+ */
+async function commitTicket(ticket: Ticket, cwd: string): Promise<void> {
+  const git = simpleGit(cwd);
+
+  // Stage all changes
+  await git.add('.');
+
+  // Commit with ticket info
+  const commitMessage = `feat: ${ticket.id} - ${ticket.title}`;
+  await git.commit(commitMessage);
+
+  console.log(`   ✅ Committed: ${commitMessage}`);
+}
+
+/**
  * Main build command - processes all tickets and commits each one
  */
 export async function buildCommand(options: BuildOptions): Promise<void> {
@@ -95,8 +111,8 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       ticketsFile = 'tickets.json',
       dbUrl = 'postgres://postgres:postgres@localhost:5432/postgres',
       reset = false,
-      confirm = false,
-      noCommit = false,
+      askConfirm = false,
+      askCommit = false,
       noLogs = false,
     } = options;
 
@@ -157,7 +173,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
     });
     console.log('');
 
-    // 4. Process each ticket sequentially with ship --commit
+    // 4. Process each ticket sequentially
     for (let i = 0; i < ticketsToProcess.length; i++) {
       const ticket = ticketsToProcess[i];
 
@@ -170,10 +186,9 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
         // Determine if this is a frontend ticket
         const isFrontendTicket = ticket.id.startsWith('FRONTEND-');
 
-        // Use ship command, add --test for frontend tickets, --review for all tickets
+        // Step 1: Ship implements the ticket (no commit)
         await shipCommand({
           ticket: ticket.id,
-          commit: !noCommit,
           ticketsFile,
           test: isFrontendTicket,
           review: true, // Always perform code review during build
@@ -182,16 +197,26 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
           noLogs,
         });
 
-        const completionMessage = noCommit
-          ? `\n✅ ${ticket.id} completed successfully\n`
-          : `\n✅ ${ticket.id} completed and committed successfully\n`;
-        console.log(completionMessage);
+        console.log(`\n✅ ${ticket.id} implemented successfully`);
+
+        // Step 2: Build handles commit logic
+        if (askCommit) {
+          // Interactive: ask before committing
+          const shouldCommit = await promptConfirmation(`\n❓ Commit changes for ${ticket.id}?`);
+
+          if (shouldCommit) {
+            await commitTicket(ticket, cwd);
+          } else {
+            console.log('   ⏭️  Skipped commit (ticket marked as Done)\n');
+          }
+        } else {
+          // Default: auto-commit
+          await commitTicket(ticket, cwd);
+        }
 
         // Ask for confirmation before proceeding to next ticket (if not last ticket)
-        if (confirm && i < ticketsToProcess.length - 1) {
-          const shouldContinue = await promptConfirmation(
-            '❓ Do you want to proceed to the next ticket?'
-          );
+        if (askConfirm && i < ticketsToProcess.length - 1) {
+          const shouldContinue = await promptConfirmation('\n❓ Proceed to next ticket?');
 
           if (!shouldContinue) {
             console.log('\n⏸️  Build paused by user');
@@ -214,22 +239,12 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
     console.log('✅ Build Completed Successfully!');
     console.log('='.repeat(80));
     console.log(`📦 Total tickets processed: ${ticketsToProcess.length}`);
-
-    if (noCommit) {
-      console.log(`✅ All tickets have been implemented (changes not committed)`);
-      console.log('='.repeat(80));
-      console.log('\n💡 Next steps:');
-      console.log('   - Review the changes');
-      console.log('   - Commit manually using: git add . && git commit -m "your message"');
-      console.log('   - Or run build again without --no-commit to auto-commit\n');
-    } else {
-      console.log(`✅ All tickets have been committed to current branch`);
-      console.log('='.repeat(80));
-      console.log('\n💡 Next steps:');
-      console.log('   - Review the commits');
-      console.log('   - Create a PR using: gh pr create');
-      console.log('   - Or push to a remote branch and create PR manually\n');
-    }
+    console.log(`✅ All tickets have been implemented and committed`);
+    console.log('='.repeat(80));
+    console.log('\n💡 Next steps:');
+    console.log('   - Review the commits: git log');
+    console.log('   - Create a PR using: gh pr create');
+    console.log('   - Or push to remote: git push origin <branch-name>\n');
   } catch (error) {
     console.error('\n❌ Build failed:', error);
     throw error;

@@ -159,8 +159,8 @@ async function main() {
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
           reset: args.includes('--reset'),
-          confirm: args.includes('--confirm'),
-          noCommit: args.includes('--no-commit'),
+          askConfirm: args.includes('--ask-confirm'),
+          askCommit: args.includes('--ask-commit'),
           noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
@@ -338,11 +338,12 @@ COMMANDS:
   ship --ticket=<ID> [options]
     Implement a single ticket from tickets.json
     Follows CLAUDE.md rules, runs linting, and optionally runs tests
+    Note: Ship implements tickets but does NOT commit. Use 'build' for commits.
 
     Options:
       --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
       --test                Run E2E tests after implementation
-      --commit              Commit and push to current branch
+      --review              Perform code review with ticket context
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --directory=<path>    Directory to run ship in (default: current directory)
       --dir=<path>          Alias for --directory
@@ -351,16 +352,17 @@ COMMANDS:
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
       kosuke ship --ticket=FRONTEND-1 --test       # Implement with testing
-      kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch
+      kosuke ship --ticket=BACKEND-2 --review      # Implement with code review
       kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
       kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory
       kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
-    By default, commits each ticket to current branch
+    Implements and commits each ticket individually to current branch
     Processes tickets in order: Schema → Backend → Frontend
     Frontend tickets automatically include E2E testing
+    All tickets automatically include code review for quality assurance
 
     Options:
       --directory=<path>    Directory to run build in (default: current directory)
@@ -368,18 +370,18 @@ COMMANDS:
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --db-url=<url>        Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
       --reset               Reset all tickets to "Todo" status before processing (start from scratch)
-      --confirm             Ask for confirmation before proceeding to next ticket (useful for review)
-      --no-commit           Skip committing changes (apply changes locally only)
+      --ask-confirm         Ask for confirmation before proceeding to next ticket (useful for review)
+      --ask-commit          Ask before committing each ticket (default: auto-commit after each ticket)
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
-      kosuke build                            # Process and commit all tickets
+      kosuke build                            # Process and auto-commit all tickets
       gh pr create                            # Create PR manually
 
-      kosuke build --no-commit                # Process tickets without committing
+      kosuke build --ask-commit               # Ask before committing each ticket
+      kosuke build --ask-confirm              # Ask before processing each ticket
+      kosuke build --ask-commit --ask-confirm # Fully interactive mode
       kosuke build --reset                    # Reset all tickets and start from scratch
-      kosuke build --confirm                  # Ask for confirmation after each ticket
-      kosuke build --reset --confirm          # Reset and confirm before each ticket
       kosuke build --tickets=custom.json      # Use custom tickets file
       kosuke build --directory=./my-project   # Run build in specific directory
       kosuke build --db-url=postgres://user:pass@host:5432/db  # Custom DB

@@ -130,7 +130,6 @@ export interface TicketsResult {
 export interface ShipOptions {
   ticket: string; // Ticket ID (e.g., "SCHEMA-1")
   review?: boolean; // Enable review step with ticket context
-  commit?: boolean; // Commit and push to current branch
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   test?: boolean; // Run tests after implementation (iterative test+fix)
   url?: string; // Base URL for testing (default: http://localhost:3000)
@@ -146,8 +145,8 @@ export interface BuildOptions {
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   dbUrl?: string; // Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
   reset?: boolean; // Reset all tickets to "Todo" status before processing
-  confirm?: boolean; // Ask for confirmation before proceeding to next ticket
-  noCommit?: boolean; // Skip committing changes (default: false, commits are made)
+  askConfirm?: boolean; // Ask for confirmation before proceeding to next ticket
+  askCommit?: boolean; // Ask before committing each ticket (default: auto-commit)
   noLogs?: boolean;
 }
 

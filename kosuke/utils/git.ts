@@ -140,29 +140,6 @@ export async function getCurrentBranch(cwd?: string): Promise<string> {
 }
 
 /**
- * Commit and push to current branch (no branch creation, no PR)
- */
-export async function commitAndPushCurrentBranch(message: string, cwd?: string): Promise<void> {
-  const git = getGitInstance(cwd);
-  await ensureGitIdentity(cwd);
-
-  // Check if there are changes to commit
-  const status = await git.status();
-  if (status.files.length === 0) {
-    console.log('ℹ️  No changes to commit');
-    return;
-  }
-
-  // Commit changes
-  await git.add(['-A']);
-  await git.commit(message, ['--no-verify']);
-
-  // Push to current branch
-  const currentBranch = await getCurrentBranch(cwd);
-  await git.push('origin', currentBranch);
-}
-
-/**
  * Get git diff of current changes (staged and unstaged)
  */
 export async function getGitDiff(cwd?: string): Promise<string> {

@@ -4,11 +4,11 @@
  * This command takes a ticket ID, implements it following CLAUDE.md rules,
  * runs linting, and optionally performs code review with ticket context.
  *
+ * Note: Ship implements tickets but does NOT commit. Use 'build' command for commits.
+ *
  * Usage:
  *   kosuke ship --ticket=SCHEMA-1                    # Implement ticket (local only)
  *   kosuke ship --ticket=BACKEND-2 --review          # Implement with code review
- *   kosuke ship --ticket=FRONTEND-1 --commit         # Implement and commit to current branch
- *   kosuke ship --ticket=BACKEND-3 --review --commit # Implement, review, then commit
  *   kosuke ship --ticket=FRONTEND-1 --test           # Implement and run tests
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
  *   kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db
@@ -18,7 +18,6 @@ import { existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
-import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { findTicket, loadTicketsFile, updateTicketStatus } from '../utils/tickets-manager.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
@@ -347,11 +346,8 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
  * Main ship command
  */
 export async function shipCommand(options: ShipOptions): Promise<void> {
-  const { ticket: ticketId, commit = false, directory, noLogs = false } = options;
+  const { ticket: ticketId, noLogs = false } = options;
   console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
-
-  // Resolve directory
-  const cwd = directory ? resolve(directory) : process.cwd();
 
   // Initialize logging context
   const logContext = logger.createContext('ship', { noLogs });
@@ -361,10 +357,6 @@ export async function shipCommand(options: ShipOptions): Promise<void> {
     // Validate environment
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
-    }
-
-    if (commit && !process.env.GITHUB_TOKEN) {
-      throw new Error('GITHUB_TOKEN environment variable is required for --commit flag');
     }
 
     // Run core implementation
@@ -379,13 +371,6 @@ export async function shipCommand(options: ShipOptions): Promise<void> {
     logContext.fixesApplied =
       result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
 
-    // Commit if flag is set
-    if (commit) {
-      console.log('\n📝 Committing and pushing to current branch...');
-      await commitAndPushCurrentBranch(`feat: implement ${ticketId}`, cwd);
-      console.log('   ✅ Changes committed and pushed\n');
-    }
-
     // Display summary
     console.log('\n✅ Ship completed successfully!');
     console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
@@ -394,10 +379,7 @@ export async function shipCommand(options: ShipOptions): Promise<void> {
       console.log(`🔍 Review fixes: ${result.reviewFixCount}`);
     }
     console.log(`💰 Total cost: $${result.cost.toFixed(4)}`);
-
-    if (!commit) {
-      console.log('\nℹ️  Changes applied locally. Use --commit to push to current branch.');
-    }
+    console.log('\nℹ️  Changes applied locally. Commits are handled by the build command.');
 
     // Log successful execution
     await logger.complete(logContext, 'success');
