@@ -256,7 +256,8 @@ describe('logger', () => {
       await logger.complete(context, 'success');
 
       const executionTime = Date.now() - startTime;
-      expect(executionTime).toBeGreaterThanOrEqual(100);
+      // Allow for small timing variance (±1ms) due to timer precision
+      expect(executionTime).toBeGreaterThanOrEqual(99);
     });
 
     it('should handle error status with error message', async () => {

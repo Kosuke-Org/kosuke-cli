@@ -9,6 +9,7 @@
  * Usage:
  *   kosuke build                           # Process and commit all tickets
  *   kosuke build --tickets=path/to/tickets.json
+ *   kosuke build --db-url=postgres://user:pass@host:5432/db
  *
  * Note: Create a feature branch before running build:
  *   git checkout -b feat/implement-tickets
@@ -92,7 +93,12 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       throw new Error('GITHUB_TOKEN environment variable is required for build command');
     }
 
-    const { directory, ticketsFile = 'tickets.json', noLogs = false } = options;
+    const {
+      directory,
+      ticketsFile = 'tickets.json',
+      dbUrl = 'postgres://postgres:postgres@postgres:5432/postgres',
+      noLogs = false,
+    } = options;
 
     // 1. Validate and resolve directory
     const cwd = directory ? resolve(directory) : process.cwd();
@@ -155,6 +161,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
           ticketsFile,
           test: isFrontendTicket,
           directory: cwd,
+          dbUrl,
           noLogs,
         });
 

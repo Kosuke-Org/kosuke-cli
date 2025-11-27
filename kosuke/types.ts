@@ -139,12 +139,14 @@ export interface ShipOptions {
   headed?: boolean; // Show browser during testing
   debug?: boolean; // Enable debug mode
   directory?: string; // Directory to run ship in (default: cwd)
+  dbUrl?: string; // Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
   noLogs?: boolean;
 }
 
 export interface BuildOptions {
   directory?: string; // Directory to run build in (default: cwd)
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
+  dbUrl?: string; // Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
   noLogs?: boolean;
 }
 

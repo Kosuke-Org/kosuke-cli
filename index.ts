@@ -121,7 +121,7 @@ async function main() {
         if (!ticketArg) {
           console.error('❌ --ticket flag is required\n');
           console.log(
-            'Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr] [--directory=<path>]'
+            'Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr] [--directory=<path>] [--db-url=<url>]'
           );
           console.log('\nExamples:');
           console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
@@ -131,6 +131,9 @@ async function main() {
           console.log('  kosuke ship --ticket=BACKEND-3 --pr          # Create PR (new branch)');
           console.log(
             '  kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory'
+          );
+          console.log(
+            '  kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB'
           );
           process.exit(1);
         }
@@ -146,6 +149,7 @@ async function main() {
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
+          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await shipCommand(options);
@@ -158,6 +162,7 @@ async function main() {
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
+          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
@@ -346,6 +351,7 @@ COMMANDS:
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --directory=<path>    Directory to run ship in (default: current directory)
       --dir=<path>          Alias for --directory
+      --db-url=<url>        Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
 
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
@@ -355,6 +361,7 @@ COMMANDS:
       kosuke ship --ticket=BACKEND-3 --pr          # Create new branch + PR
       kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
       kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory
+      kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
@@ -366,6 +373,7 @@ COMMANDS:
       --directory=<path>    Directory to run build in (default: current directory)
       --dir=<path>          Alias for --directory
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
+      --db-url=<url>        Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
@@ -374,6 +382,7 @@ COMMANDS:
 
       kosuke build --tickets=custom.json      # Use custom tickets file
       kosuke build --directory=./my-project   # Run build in specific directory
+      kosuke build --db-url=postgres://user:pass@host:5432/db  # Custom DB
 
     Note: If a ticket fails, fix the issue and run build again to resume
 

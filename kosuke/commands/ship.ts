@@ -11,6 +11,7 @@
  *   kosuke ship --ticket=BACKEND-3 --pr              # Implement and create PR (new branch)
  *   kosuke ship --ticket=FRONTEND-1 --test           # Implement and run tests
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
+ *   kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -111,7 +112,7 @@ function loadClaudeRules(cwd: string = process.cwd()): string {
 /**
  * Build system prompt for ticket implementation
  */
-function buildImplementationPrompt(ticket: Ticket, claudeRules: string): string {
+function buildImplementationPrompt(ticket: Ticket, claudeRules: string, dbUrl: string): string {
   const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
 
   const schemaMigrationInstructions = isSchemaTicket
@@ -120,11 +121,15 @@ function buildImplementationPrompt(ticket: Ticket, claudeRules: string): string 
 **Database Schema Changes (CRITICAL FOR SCHEMA TICKETS):**
 This is a SCHEMA ticket. After making changes to database schema files:
 1. Run \`bun run db:generate\` to generate Drizzle migrations
-2. Run \`bun run db:migrate\` to apply migrations to the database
-3. Run \`bun run db:seed\` to seed the database with initial data
+2. Run \`POSTGRES_URL="${dbUrl}" bun run db:migrate\` to apply migrations to the database
+3. Run \`POSTGRES_URL="${dbUrl}" bun run db:seed\` to seed the database with initial data
 4. Verify migration files were created in lib/db/migrations/
 5. Handle any migration errors before proceeding
 6. Ensure schema changes follow Drizzle ORM best practices from CLAUDE.md
+
+**Database Connection:**
+- Using database URL: ${dbUrl}
+- Ensure the database is accessible before running migration commands
 `
     : '';
 
@@ -211,6 +216,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     test = false,
     ticketsFile = 'tickets.json',
     directory,
+    dbUrl = 'postgres://postgres:postgres@postgres:5432/postgres',
   } = options;
 
   // 1. Validate and resolve directory
@@ -286,7 +292,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`🚀 Phase 1: Implementation`);
     console.log(`${'='.repeat(60)}\n`);
 
-    const systemPrompt = buildImplementationPrompt(ticket, claudeRules);
+    const systemPrompt = buildImplementationPrompt(ticket, claudeRules, dbUrl);
 
     const implementationResult = await runAgent(`Implement ticket ${ticketId}: ${ticket.title}`, {
       systemPrompt,
