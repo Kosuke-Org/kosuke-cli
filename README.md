@@ -288,6 +288,8 @@ node_modules/
 
 ## Development
 
+### Local Development
+
 If you want to contribute or run from source:
 
 ```bash
@@ -307,4 +309,50 @@ npm run dev <command>
 # Link for local testing
 npm link
 kosuke <command>
+```
+
+### Docker Development
+
+Run kosuke-cli inside Docker for an isolated development environment:
+
+**Prerequisites:**
+
+- Docker installed and running
+- `kosuke_network` Docker network created (if you want to connect to other services)
+
+**Quick Start:**
+
+```bash
+# Create .env file with your credentials
+cat > .env << EOF
+ANTHROPIC_API_KEY=your-api-key
+GITHUB_TOKEN=your-github-token
+EOF
+
+# Run the development container
+./docker-dev.sh
+```
+
+The script will:
+
+- Build the Docker image
+- Mount your current directory into the container
+- Connect to `kosuke_network` for inter-service communication
+- Load environment variables from `.env`
+- Drop you into an interactive bash shell
+
+**Inside the container:**
+
+```bash
+# Run any kosuke command
+kosuke sync-rules
+kosuke analyse
+kosuke lint
+
+# The workspace is mounted, so changes are reflected immediately
+npm run build
+kosuke <command>
+
+# Exit the container
+exit
 ```

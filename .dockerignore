@@ -1,0 +1,15 @@
+# .dockerignore for kosuke-cli development
+# Note: We mount the entire directory as a volume, so this file
+# only affects the Docker build context (which is minimal for dev)
+
+# We keep this minimal since we're mounting everything at runtime
+# Only exclude large/unnecessary files from build context
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
