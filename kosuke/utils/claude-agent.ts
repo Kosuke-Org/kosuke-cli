@@ -223,6 +223,9 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     settingSources = ['project'], // Default: Load CLAUDE.md from project
   } = config;
 
+  // Log the model being used
+  console.log(`🤖 Using model: ${model}\n`);
+
   // Check if CLAUDE.md exists and warn if not (when loading from project)
   if (settingSources.includes('project')) {
     const claudePath = join(cwd, 'CLAUDE.md');

@@ -144,6 +144,9 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
   // 3. Context ready (using current working directory)
   console.log('📁 Working in current directory context\n');
 
+  // Determine ticket type
+  const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
+
   // Track metrics
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -186,8 +189,8 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     const lintResult = await runComprehensiveLinting(cwd);
     console.log(`\n✅ Linting completed (${lintResult.fixCount} fixes applied)`);
 
-    // 7. Review phase (if review flag is set) - with ticket context
-    if (review) {
+    // 7. Review phase (if review flag is set) - SKIP for SCHEMA tickets
+    if (review && !isSchemaTicket) {
       console.log(`\n${'='.repeat(60)}`);
       console.log(`🔍 Phase 3: Code Review (Git Diff)`);
       console.log(`${'='.repeat(60)}\n`);
@@ -210,6 +213,10 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
 
       console.log(
         `\n✨ Review completed (${reviewResult.issuesFound} issues found, ${reviewFixCount} fixes applied)`
+      );
+    } else if (review && isSchemaTicket) {
+      console.log(
+        '\nℹ️  Skipping code review for SCHEMA ticket (review focuses on application code, not database migrations)'
       );
     }
 

@@ -222,8 +222,13 @@ class CliLogger {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        const error = await response.json();
-        console.warn(`⚠️  Failed to log command: ${JSON.stringify(error)}`);
+        try {
+          const error = await response.json();
+          console.warn(`⚠️  Failed to log command: ${JSON.stringify(error)}`);
+        } catch {
+          // Response might not be JSON (e.g., HTML error page)
+          console.warn(`⚠️  Failed to log command: ${response.status} ${response.statusText}`);
+        }
       }
     } catch (error) {
       // Non-blocking: log warning but don't throw
