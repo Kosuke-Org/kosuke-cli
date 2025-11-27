@@ -141,6 +141,7 @@ export async function getCodeCore(options: GetCodeOptions): Promise<CodeExplorat
     cwd: repoInfo.localPath,
     maxTurns: 20,
     verbosity: 'normal',
+    settingSources: [], // Don't load CLAUDE.md from external repos
   });
 
   console.log(`\n✅ Exploration complete!\n`);

@@ -122,6 +122,7 @@ Explore the repository, read both files, identify improvements, and update the c
       maxTurns: 30,
       cwd: workspaceRoot,
       verbosity: 'verbose',
+      settingSources: [], // Don't load CLAUDE.md when syncing it
     });
 
     // Read the adapted content
@@ -203,6 +204,7 @@ Keep it concise and developer-friendly. Use bullet points starting with emojis.`
       cwd: process.cwd(),
       verbosity: 'minimal',
       systemPrompt: '', // No system prompt needed for this simple task
+      settingSources: [], // Don't load CLAUDE.md when syncing it
     });
 
     console.log('   ✅ Summary generated\n');

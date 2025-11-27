@@ -10,41 +10,20 @@
  *   kosuke review                          # Review current git diff
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
-import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
-import { runComprehensiveLinting } from '../utils/validator.js';
-import { logger, setupCancellationHandler } from '../utils/logger.js';
 import type { ReviewOptions, ReviewResult } from '../types.js';
-
-/**
- * Load CLAUDE.md rules
- */
-function loadClaudeRules(cwd: string = process.cwd()): string {
-  const claudePath = join(cwd, 'CLAUDE.md');
-
-  if (!existsSync(claudePath)) {
-    throw new Error(
-      `CLAUDE.md not found in workspace root.\n` +
-        `Please ensure CLAUDE.md exists at: ${claudePath}`
-    );
-  }
-
-  return readFileSync(claudePath, 'utf-8');
-}
+import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
+import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
+import { runComprehensiveLinting } from '../utils/validator.js';
 
 /**
  * Build system prompt for code review (git diff only)
  */
-function buildReviewSystemPrompt(claudeRules: string, gitDiff: string): string {
+function buildReviewSystemPrompt(gitDiff: string): string {
   return `You are a senior code reviewer conducting a code quality review of recent changes.
 
 **Your Task:**
-Review the git diff below for compliance with the project's CLAUDE.md rules and best practices.
-
-**Project Rules (CLAUDE.md):**
-${claudeRules}
+Review the git diff below for compliance with the project's coding guidelines (CLAUDE.md will be loaded automatically).
 
 **Git Diff to Review:**
 \`\`\`diff
@@ -86,15 +65,12 @@ Review the changes shown in the diff and fix any issues you find.`;
 /**
  * Core review logic - reviews git diff only
  */
-export async function reviewCore(
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  options: ReviewOptions = {}
-): Promise<ReviewResult> {
-  const cwd = process.cwd();
+export async function reviewCore(options: ReviewOptions = {}): Promise<ReviewResult> {
+  const cwd = options.directory || process.cwd();
 
   // 1. Check for uncommitted changes
   console.log('🔍 Checking for uncommitted changes...');
-  const hasChanges = await hasUncommittedChanges();
+  const hasChanges = await hasUncommittedChanges(cwd);
 
   if (!hasChanges) {
     console.log('   ℹ️  No uncommitted changes found. Nothing to review.\n');
@@ -116,7 +92,7 @@ export async function reviewCore(
 
   // 2. Get git diff
   console.log('📝 Getting git diff...');
-  const gitDiff = await getGitDiff();
+  const gitDiff = await getGitDiff(cwd);
 
   if (!gitDiff || gitDiff.trim().length === 0) {
     console.log('   ℹ️  No diff available. Nothing to review.\n');
@@ -136,17 +112,12 @@ export async function reviewCore(
 
   console.log(`   ✅ Got diff (${gitDiff.length} characters)\n`);
 
-  // 3. Load CLAUDE.md rules
-  console.log('📖 Loading CLAUDE.md rules...');
-  const claudeRules = loadClaudeRules(cwd);
-  console.log(`   ✅ Loaded rules (${claudeRules.length} characters)\n`);
-
-  // 4. Review phase
+  // 3. Review phase
   console.log(`\n${'='.repeat(60)}`);
   console.log(`🔍 Phase 1: Code Review of Git Diff`);
   console.log(`${'='.repeat(60)}\n`);
 
-  const systemPrompt = buildReviewSystemPrompt(claudeRules, gitDiff);
+  const systemPrompt = buildReviewSystemPrompt(gitDiff);
 
   const reviewResult = await runAgent(
     'Review the git diff for compliance with CLAUDE.md rules and fix all issues found',
@@ -169,7 +140,7 @@ export async function reviewCore(
   console.log(`🔧 Phase 2: Linting & Quality Checks`);
   console.log(`${'='.repeat(60)}\n`);
 
-  const lintResult = await runComprehensiveLinting();
+  const lintResult = await runComprehensiveLinting(cwd);
   console.log(`\n✅ Linting completed (${lintResult.fixCount} additional fixes applied)`);
 
   return {

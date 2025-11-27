@@ -17,37 +17,11 @@
  *   gh pr create
  */
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import type { BuildOptions, Ticket } from '../types.js';
+import { loadTicketsFile, type TicketsFile } from '../utils/tickets-manager.js';
 import { shipCommand } from './ship.js';
-
-interface TicketsFile {
-  generatedAt: string;
-  totalTickets: number;
-  tickets: Ticket[];
-}
-
-/**
- * Load tickets from file
- */
-function loadTicketsFile(ticketsPath: string): TicketsFile {
-  if (!existsSync(ticketsPath)) {
-    throw new Error(
-      `Tickets file not found: ${ticketsPath}\n` +
-        `Please generate tickets first using: kosuke tickets`
-    );
-  }
-
-  try {
-    const content = readFileSync(ticketsPath, 'utf-8');
-    return JSON.parse(content) as TicketsFile;
-  } catch (error) {
-    throw new Error(
-      `Failed to parse tickets file: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
 
 /**
  * Filter and sort tickets for processing

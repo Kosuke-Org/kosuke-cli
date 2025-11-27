@@ -14,105 +14,22 @@
  *   kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { runWithPR } from '../utils/pr-orchestrator.js';
+import { findTicket, loadTicketsFile, updateTicketStatus } from '../utils/tickets-manager.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
 import { reviewCore } from './review.js';
 import { testCore } from './test.js';
 
-interface TicketsFile {
-  generatedAt: string;
-  totalTickets: number;
-  tickets: Ticket[];
-}
-
-/**
- * Load tickets from file
- */
-function loadTicketsFile(ticketsPath: string): TicketsFile {
-  if (!existsSync(ticketsPath)) {
-    throw new Error(
-      `Tickets file not found: ${ticketsPath}\n` +
-        `Please generate tickets first using: kosuke tickets`
-    );
-  }
-
-  try {
-    const content = readFileSync(ticketsPath, 'utf-8');
-    return JSON.parse(content) as TicketsFile;
-  } catch (error) {
-    throw new Error(
-      `Failed to parse tickets file: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-/**
- * Save tickets to file
- */
-function saveTicketsFile(ticketsPath: string, ticketsData: TicketsFile): void {
-  writeFileSync(ticketsPath, JSON.stringify(ticketsData, null, 2), 'utf-8');
-}
-
-/**
- * Find ticket by ID
- */
-function findTicket(ticketsData: TicketsFile, ticketId: string): Ticket | undefined {
-  return ticketsData.tickets.find((t) => t.id === ticketId);
-}
-
-/**
- * Update ticket status in file
- */
-function updateTicketStatus(
-  ticketsPath: string,
-  ticketId: string,
-  status: Ticket['status'],
-  error?: string
-): void {
-  const ticketsData = loadTicketsFile(ticketsPath);
-  const ticket = findTicket(ticketsData, ticketId);
-
-  if (!ticket) {
-    console.warn(`⚠️  Ticket ${ticketId} not found, skipping status update`);
-    return;
-  }
-
-  ticket.status = status;
-  if (error) {
-    ticket.error = error;
-  } else {
-    delete ticket.error;
-  }
-
-  saveTicketsFile(ticketsPath, ticketsData);
-}
-
-/**
- * Load CLAUDE.md rules
- */
-function loadClaudeRules(cwd: string = process.cwd()): string {
-  const claudePath = join(cwd, 'CLAUDE.md');
-
-  if (!existsSync(claudePath)) {
-    throw new Error(
-      `CLAUDE.md not found in workspace root.\n` +
-        `Please ensure CLAUDE.md exists at: ${claudePath}`
-    );
-  }
-
-  return readFileSync(claudePath, 'utf-8');
-}
-
 /**
  * Build system prompt for ticket implementation
  */
-function buildImplementationPrompt(ticket: Ticket, claudeRules: string, dbUrl: string): string {
+function buildImplementationPrompt(ticket: Ticket, dbUrl: string): string {
   const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
 
   const schemaMigrationInstructions = isSchemaTicket
@@ -125,18 +42,14 @@ This is a SCHEMA ticket. After making changes to database schema files:
 3. Run \`POSTGRES_URL="${dbUrl}" bun run db:seed\` to seed the database with initial data
 4. Verify migration files were created in lib/db/migrations/
 5. Handle any migration errors before proceeding
-6. Ensure schema changes follow Drizzle ORM best practices from CLAUDE.md
-
-**Database Connection:**
-- Using database URL: ${dbUrl}
-- Ensure the database is accessible before running migration commands
+6. Ensure schema changes follow Drizzle ORM best practices from project guidelines
 `
     : '';
 
   return `You are an expert software engineer implementing a feature ticket.
 
 **Your Task:**
-Implement the following ticket according to the project's coding standards and architecture patterns.
+Implement the following ticket according to the project's coding standards and architecture patterns (CLAUDE.md will be loaded automatically).
 
 **Ticket Information:**
 - ID: ${ticket.id}
@@ -144,11 +57,8 @@ Implement the following ticket according to the project's coding standards and a
 - Description:
 ${ticket.description}
 
-**Project Rules (CLAUDE.md):**
-${claudeRules}
-
 **Implementation Requirements:**
-1. Follow ALL guidelines in CLAUDE.md
+1. Follow ALL project guidelines from CLAUDE.md
 2. Explore the current codebase to understand existing patterns and architecture
 3. Write clean, well-documented code
 4. Ensure TypeScript type safety
@@ -164,46 +74,6 @@ ${claudeRules}
 - Maintain consistency with the existing codebase style
 
 Begin by exploring the current codebase, then implement the ticket systematically.`;
-}
-
-/**
- * Build system prompt for review
- */
-function buildReviewPrompt(ticket: Ticket, claudeRules: string): string {
-  return `You are a senior code reviewer ensuring compliance with project standards.
-
-**Your Task:**
-Review the implementation of ticket ${ticket.id} and ensure it follows CLAUDE.md rules.
-
-**Ticket Context:**
-- ID: ${ticket.id}
-- Title: ${ticket.title}
-
-**Project Rules (CLAUDE.md):**
-${claudeRules}
-
-**Review Requirements:**
-1. Check compliance with CLAUDE.md guidelines
-2. Verify code quality and best practices
-3. Ensure TypeScript type safety
-4. Check error handling
-5. Verify naming conventions
-6. Check for security issues
-7. Ensure proper documentation
-
-**If Issues Found:**
-- Use search_replace or write tools to FIX them immediately
-- Don't just report issues - FIX them!
-- Make minimal necessary changes
-- Ensure fixes don't break functionality
-
-**Critical Instructions:**
-- Read the files that were recently modified for this ticket
-- Identify any violations of CLAUDE.md rules
-- Fix ALL issues found
-- Ensure the code is production-ready after your review
-
-Begin by reading recent changes and reviewing them against the standards.`;
 }
 
 /**
@@ -269,12 +139,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
   updateTicketStatus(ticketsPath, ticketId, 'InProgress');
   console.log('   ✅ Status updated\n');
 
-  // 3. Load CLAUDE.md rules
-  console.log('📖 Loading CLAUDE.md rules...');
-  const claudeRules = loadClaudeRules(cwd);
-  console.log(`   ✅ Loaded rules (${claudeRules.length} characters)\n`);
-
-  // 4. Context ready (using current working directory)
+  // 3. Context ready (using current working directory)
   console.log('📁 Working in current directory context\n');
 
   // Track metrics
@@ -292,7 +157,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`🚀 Phase 1: Implementation`);
     console.log(`${'='.repeat(60)}\n`);
 
-    const systemPrompt = buildImplementationPrompt(ticket, claudeRules, dbUrl);
+    const systemPrompt = buildImplementationPrompt(ticket, dbUrl);
 
     const implementationResult = await runAgent(`Implement ticket ${ticketId}: ${ticket.title}`, {
       systemPrompt,
@@ -323,36 +188,22 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     let reviewPerformed = false;
     if (review) {
       console.log(`\n${'='.repeat(60)}`);
-      console.log(`🔍 Phase 3: Pre-Review (Full Context)`);
+      console.log(`🔍 Phase 3: Code Review (Git Diff)`);
       console.log(`${'='.repeat(60)}\n`);
 
-      const reviewSystemPrompt = buildReviewPrompt(ticket, claudeRules);
+      // Use existing review logic from review.ts
+      const reviewResult = await reviewCore({ directory: cwd });
 
-      const reviewResult = await runAgent(
-        `Review implementation of ticket ${ticketId} against CLAUDE.md rules`,
-        {
-          systemPrompt: reviewSystemPrompt,
-          cwd,
-          maxTurns: 25,
-          verbosity: 'normal',
-        }
-      );
-
-      reviewFixCount = reviewResult.fixCount;
+      reviewFixCount = reviewResult.fixesApplied;
       totalInputTokens += reviewResult.tokensUsed.input;
       totalOutputTokens += reviewResult.tokensUsed.output;
       totalCacheCreationTokens += reviewResult.tokensUsed.cacheCreation;
       totalCacheReadTokens += reviewResult.tokensUsed.cacheRead;
       totalCost += reviewResult.cost;
 
-      console.log(`\n✨ Pre-Review completed (${reviewFixCount} issues fixed)`);
-      console.log(`💰 Review cost: ${formatCostBreakdown(reviewResult)}`);
-
-      // Run linting again after review fixes
-      if (reviewFixCount > 0) {
-        console.log('\n🔧 Running linting after review fixes...');
-        await runComprehensiveLinting(cwd);
-      }
+      console.log(
+        `\n✨ Review completed (${reviewResult.issuesFound} issues found, ${reviewFixCount} total fixes applied)`
+      );
 
       reviewPerformed = true;
     }

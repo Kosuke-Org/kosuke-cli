@@ -16,46 +16,12 @@
  *   kosuke test --prompt="..." --headed                # Show browser (visible window)
  */
 
-import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { TestOptions, TestResult, Ticket } from '../types.js';
 import { runBrowserTest } from '../utils/browser-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { generateCustomTestPrompt, generateTestPrompt } from '../utils/prompt-generator.js';
-
-interface TicketsFile {
-  generatedAt: string;
-  totalTickets: number;
-  tickets: Ticket[];
-}
-
-/**
- * Load tickets from file
- */
-function loadTicketsFile(ticketsPath: string): TicketsFile {
-  if (!existsSync(ticketsPath)) {
-    throw new Error(
-      `Tickets file not found: ${ticketsPath}\n` +
-        `Please generate tickets first using: kosuke tickets`
-    );
-  }
-
-  try {
-    const content = readFileSync(ticketsPath, 'utf-8');
-    return JSON.parse(content) as TicketsFile;
-  } catch (error) {
-    throw new Error(
-      `Failed to parse tickets file: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-/**
- * Find ticket by ID
- */
-function findTicket(ticketsData: TicketsFile, ticketId: string): Ticket | undefined {
-  return ticketsData.tickets.find((t) => t.id === ticketId);
-}
+import { findTicket, loadTicketsFile } from '../utils/tickets-manager.js';
 
 /**
  * Core test logic (atomic - single execution, no retries, no fixes)

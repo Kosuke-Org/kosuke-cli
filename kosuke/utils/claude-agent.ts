@@ -5,7 +5,14 @@
  * for all commands that use Claude Code Agent SDK.
  */
 
-import { query, type Options, type PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync } from 'fs';
+import { join } from 'path';
+import {
+  query,
+  type Options,
+  type PermissionMode,
+  type SettingSource,
+} from '@anthropic-ai/claude-agent-sdk';
 
 /**
  * Verbosity levels for agent execution
@@ -26,6 +33,7 @@ export interface AgentConfig {
   verbosity?: AgentVerbosity;
   permissionMode?: PermissionMode;
   captureConversation?: boolean; // Enable full conversation capture (for tickets/requirements)
+  settingSources?: SettingSource[]; // Where to load settings from (e.g., 'project' loads CLAUDE.md)
 }
 
 /**
@@ -206,7 +214,18 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     verbosity = 'normal',
     permissionMode = 'bypassPermissions',
     captureConversation = false,
+    settingSources = ['project'], // Default: Load CLAUDE.md from project
   } = config;
+
+  // Check if CLAUDE.md exists and warn if not (when loading from project)
+  if (settingSources.includes('project')) {
+    const claudePath = join(cwd, 'CLAUDE.md');
+    if (!existsSync(claudePath)) {
+      console.warn(
+        '⚠️  CLAUDE.md not found in project directory. Agent will use general coding best practices.\n'
+      );
+    }
+  }
 
   const options: Options = {
     model,
@@ -214,6 +233,7 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     maxTurns,
     cwd,
     permissionMode,
+    settingSources,
   };
 
   const responseStream = query({ prompt, options });
