@@ -99,11 +99,6 @@ export type {
   NetworkLog,
   DockerLog,
   CollectedLogs,
-  PlaywrightResult,
-  PlaywrightOptions,
-  GeneratedTest,
-  VisualDiff,
-  VisualTestOptions,
   // Logger types
   CommandName,
   ExecutionStatus,

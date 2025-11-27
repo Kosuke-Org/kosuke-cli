@@ -134,7 +134,10 @@ export interface ShipOptions {
   pr?: boolean; // Create pull request (new branch)
   baseBranch?: string; // Base branch for PR
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
-  test?: boolean; // Run tests after implementation
+  test?: boolean; // Run tests after implementation (iterative test+fix)
+  url?: string; // Base URL for testing (default: http://localhost:3000)
+  headed?: boolean; // Show browser during testing
+  debug?: boolean; // Enable debug mode
   directory?: string; // Directory to run ship in (default: cwd)
   noLogs?: boolean;
 }
@@ -187,26 +190,20 @@ export interface TestOptions {
   prompt?: string; // Custom test prompt (either ticket or prompt required)
   url?: string; // Base URL (default: http://localhost:3000)
   headed?: boolean; // Show browser during testing (visible GUI window)
-  debug?: boolean; // Enable Playwright inspector
-  updateBaseline?: boolean; // Update visual baselines
-  maxRetries?: number; // Max fix-retest iterations (default: 3)
+  debug?: boolean; // Enable debug mode
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   directory?: string; // Directory to run tests in (default: cwd)
-  pr?: boolean; // Create pull request with fixes
-  baseBranch?: string; // Base branch for PR
   noLogs?: boolean;
 }
 
 export interface TestResult {
   ticketId: string;
   success: boolean;
-  testsRun: number;
-  testsPassed: number;
-  testsFailed: number;
-  visualDiffs: number;
-  fixesApplied: number;
-  lintFixCount: number;
-  iterations: number;
+  output: string; // Human-readable test result
+  logs: {
+    console: string[];
+    errors: string[];
+  };
   tokensUsed: {
     input: number;
     output: number;
@@ -214,8 +211,6 @@ export interface TestResult {
     cacheRead: number;
   };
   cost: number;
-  testFilePath: string;
-  tracePath: string;
   error?: string;
 }
 
@@ -230,6 +225,3 @@ export type {
 // Re-export utility types for public API
 export type { AnalysisResult, TestFailure } from './utils/error-analyzer.js';
 export type { ConsoleLog, NetworkLog, DockerLog, CollectedLogs } from './utils/log-collector.js';
-export type { PlaywrightResult, PlaywrightOptions } from './utils/playwright-agent.js';
-export type { GeneratedTest } from './utils/test-generator.js';
-export type { VisualDiff, VisualTestOptions } from './utils/visual-tester.js';

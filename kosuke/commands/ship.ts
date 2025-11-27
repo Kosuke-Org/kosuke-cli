@@ -13,16 +13,16 @@
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
-import { runAgent, formatCostBreakdown } from '../utils/claude-agent.js';
-import { runWithPR } from '../utils/pr-orchestrator.js';
+import type { ShipOptions, ShipResult, Ticket } from '../types.js';
+import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { commitAndPushCurrentBranch } from '../utils/git.js';
+import { logger, setupCancellationHandler } from '../utils/logger.js';
+import { runWithPR } from '../utils/pr-orchestrator.js';
+import { runComprehensiveLinting } from '../utils/validator.js';
 import { reviewCore } from './review.js';
 import { testCore } from './test.js';
-import { runComprehensiveLinting } from '../utils/validator.js';
-import { logger, setupCancellationHandler } from '../utils/logger.js';
-import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 
 interface TicketsFile {
   generatedAt: string;
@@ -351,32 +351,84 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       reviewPerformed = true;
     }
 
-    // 8. Test phase (if test flag is set)
+    // 8. Test phase (if test flag is set) - ITERATIVE
     let testFixCount = 0;
+    let testIterations = 0;
+    const maxTestRetries = 3;
+
     if (test) {
       console.log(`\n${'='.repeat(60)}`);
-      console.log(`🧪 Phase ${review ? '4' : '3'}: Testing`);
+      console.log(`🧪 Phase ${review ? '4' : '3'}: Testing (Iterative)`);
       console.log(`${'='.repeat(60)}\n`);
 
-      const testResult = await testCore({
-        ticket: ticketId,
-        ticketsFile,
-        directory: cwd,
-      });
+      let testsPassing = false;
 
-      testFixCount = testResult.fixesApplied;
-      totalInputTokens += testResult.tokensUsed.input;
-      totalOutputTokens += testResult.tokensUsed.output;
-      totalCacheCreationTokens += testResult.tokensUsed.cacheCreation;
-      totalCacheReadTokens += testResult.tokensUsed.cacheRead;
-      totalCost += testResult.cost;
+      for (let attempt = 1; attempt <= maxTestRetries; attempt++) {
+        testIterations = attempt;
+        console.log(`\n🧪 Test Attempt ${attempt}/${maxTestRetries}\n`);
 
-      if (!testResult.success) {
-        throw new Error(`Tests failed after ${testResult.iterations} iterations`);
+        // Run atomic test
+        const testResult = await testCore({
+          ticket: ticketId,
+          url: options.url,
+          headed: options.headed,
+          debug: options.debug,
+          ticketsFile,
+          directory: cwd,
+        });
+
+        totalInputTokens += testResult.tokensUsed.input;
+        totalOutputTokens += testResult.tokensUsed.output;
+        totalCacheCreationTokens += testResult.tokensUsed.cacheCreation;
+        totalCacheReadTokens += testResult.tokensUsed.cacheRead;
+        totalCost += testResult.cost;
+
+        if (testResult.success) {
+          testsPassing = true;
+          console.log('\n✅ Tests passed!');
+          break;
+        }
+
+        // If not last attempt, analyze and fix
+        if (attempt < maxTestRetries) {
+          console.log('\n🔍 Analyzing test failures...');
+
+          // Collect Docker logs for backend debugging
+          const { LogCollector } = await import('../utils/log-collector.js');
+          const logCollector = new LogCollector();
+          await logCollector.collectDockerLogs('30s');
+          const dockerLogs = logCollector.getErrors();
+
+          // Analyze errors and apply fixes
+          const { analyzeAndFix } = await import('../utils/error-analyzer.js');
+          const fixResult = await analyzeAndFix(
+            ticket,
+            testResult.output,
+            testResult.logs,
+            dockerLogs,
+            cwd
+          );
+
+          testFixCount += fixResult.fixesApplied;
+          totalInputTokens += fixResult.tokensUsed.input;
+          totalOutputTokens += fixResult.tokensUsed.output;
+          totalCacheCreationTokens += fixResult.tokensUsed.cacheCreation;
+          totalCacheReadTokens += fixResult.tokensUsed.cacheRead;
+          totalCost += fixResult.cost;
+
+          console.log(`\n🔧 Applied ${fixResult.fixesApplied} fixes`);
+          console.log(`💰 Fix cost: $${fixResult.cost.toFixed(4)}`);
+        }
       }
 
-      console.log(`\n✨ Testing completed (${testFixCount} fixes applied)`);
-      console.log(`💰 Testing cost: $${testResult.cost.toFixed(4)}`);
+      if (!testsPassing) {
+        throw new Error(`Tests failed after ${maxTestRetries} attempts`);
+      }
+
+      console.log(
+        `\n✨ Testing completed (${testFixCount} fixes applied over ${testIterations} iterations)`
+      );
+      console.log(`💰 Testing cost: $${totalCost.toFixed(4)}`);
     }
 
     // 9. Update status to Done
