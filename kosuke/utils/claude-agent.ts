@@ -5,14 +5,14 @@
  * for all commands that use Claude Code Agent SDK.
  */
 
-import { existsSync } from 'fs';
-import { join } from 'path';
 import {
   query,
   type Options,
   type PermissionMode,
   type SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Verbosity levels for agent execution
@@ -186,7 +186,13 @@ function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set
         ? ` in ${input.target_directories.join(', ')}`
         : '';
     console.log(`   🔎 Searching codebase: ${input.query || 'query'}${dirInfo}`);
-  } else if (toolName === 'write' || toolName === 'search_replace') {
+  } else if (
+    toolName === 'write' ||
+    toolName === 'search_replace' ||
+    toolName === 'edit' ||
+    toolName === 'edit_notebook' ||
+    toolName === 'delete_file'
+  ) {
     // Don't log here - fixCount will handle it
   } else if (toolName === 'run_terminal_cmd' && toolInput && typeof toolInput === 'object') {
     const input = toolInput as { command?: string };
@@ -300,10 +306,18 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
             currentMessage.content += block.text;
           }
         } else if (block.type === 'tool_use') {
-          // Track fixes
-          if (block.name === 'write' || block.name === 'search_replace') {
+          // Track fixes - count all file modification tools (case-insensitive)
+          const toolNameLower = block.name.toLowerCase();
+          const isFileModification =
+            toolNameLower === 'write' ||
+            toolNameLower === 'search_replace' ||
+            toolNameLower === 'edit' ||
+            toolNameLower === 'edit_notebook' ||
+            toolNameLower === 'delete_file';
+
+          if (isFileModification) {
             fixCount++;
-            console.log(`   🔧 Applying fix ${fixCount}...`);
+            console.log(`   🔧 Applying fix ${fixCount}... (${block.name})`);
           } else {
             logToolUsage(block.name, block.input, filesReferenced);
           }
@@ -326,10 +340,22 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
 
     // Track token usage
     if (message.type === 'result' && message.subtype === 'success') {
-      inputTokens += message.usage.input_tokens || 0;
-      outputTokens += message.usage.output_tokens || 0;
-      cacheCreationTokens += message.usage.cache_creation_input_tokens || 0;
-      cacheReadTokens += message.usage.cache_read_input_tokens || 0;
+      const input = message.usage.input_tokens || 0;
+      const output = message.usage.output_tokens || 0;
+      const cacheCreation = message.usage.cache_creation_input_tokens || 0;
+      const cacheRead = message.usage.cache_read_input_tokens || 0;
+
+      inputTokens += input;
+      outputTokens += output;
+      cacheCreationTokens += cacheCreation;
+      cacheReadTokens += cacheRead;
+
+      // Debug logging for token tracking (only if verbose)
+      if (verbosity === 'verbose' && (input > 0 || output > 0)) {
+        console.log(
+          `   📊 Turn tokens: ${input} in, ${output} out, ${cacheCreation} cache write, ${cacheRead} cache read`
+        );
+      }
 
       // Save current message when turn completes
       if (captureConversation && currentMessage) {
@@ -346,6 +372,15 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
 
   // Calculate cost
   const cost = calculateCost(inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
+
+  // Debug logging for final totals
+  if (verbosity === 'verbose') {
+    console.log(`\n   📊 Final totals:`);
+    console.log(`      • Fixes applied: ${fixCount}`);
+    console.log(`      • Total input tokens: ${inputTokens.toLocaleString()}`);
+    console.log(`      • Total output tokens: ${outputTokens.toLocaleString()}`);
+    console.log(`      • Total cost: $${cost.toFixed(4)}`);
+  }
 
   const result: AgentResult = {
     response: response.trim(),

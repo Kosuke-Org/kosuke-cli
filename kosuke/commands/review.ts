@@ -10,7 +10,7 @@
  *   kosuke review                          # Review current git diff
  */
 
-import type { ReviewOptions, ReviewResult } from '../types.js';
+import type { ReviewContext, ReviewOptions, ReviewResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
@@ -19,12 +19,30 @@ import { runComprehensiveLinting } from '../utils/validator.js';
 /**
  * Build system prompt for code review (git diff only)
  */
-function buildReviewSystemPrompt(gitDiff: string): string {
+function buildReviewSystemPrompt(gitDiff: string, context?: ReviewContext): string {
+  const ticketContextSection = context
+    ? `
+**🎫 Ticket Being Implemented:**
+- ID: ${context.ticketId}
+- Title: ${context.ticketTitle}
+- Description:
+${context.ticketDescription}
+
+**Ticket-Specific Review Requirements:**
+- Verify changes align with the ticket description above
+- Ensure all requirements from the ticket are addressed in the diff
+- Check that the implementation matches the intended feature/fix
+- Look for any obvious missing functionality described in the ticket
+- Fix any misalignments between the code changes and ticket requirements
+
+`
+    : '';
+
   return `You are a senior code reviewer conducting a code quality review of recent changes.
 
 **Your Task:**
 Review the git diff below for compliance with the project's coding guidelines (CLAUDE.md will be loaded automatically).
-
+${ticketContextSection}
 **Git Diff to Review:**
 \`\`\`diff
 ${gitDiff}
@@ -67,6 +85,12 @@ Review the changes shown in the diff and fix any issues you find.`;
  */
 export async function reviewCore(options: ReviewOptions = {}): Promise<ReviewResult> {
   const cwd = options.directory || process.cwd();
+  const { context } = options;
+
+  // Log ticket context if provided
+  if (context) {
+    console.log(`🎫 Reviewing changes for: ${context.ticketId} - ${context.ticketTitle}\n`);
+  }
 
   // 1. Check for uncommitted changes
   console.log('🔍 Checking for uncommitted changes...');
@@ -117,7 +141,7 @@ export async function reviewCore(options: ReviewOptions = {}): Promise<ReviewRes
   console.log(`🔍 Phase 1: Code Review of Git Diff`);
   console.log(`${'='.repeat(60)}\n`);
 
-  const systemPrompt = buildReviewSystemPrompt(gitDiff);
+  const systemPrompt = buildReviewSystemPrompt(gitDiff, context);
 
   const reviewResult = await runAgent(
     'Review the git diff for compliance with CLAUDE.md rules and fix all issues found',

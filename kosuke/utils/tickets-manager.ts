@@ -37,7 +37,7 @@ export function loadTicketsFile(ticketsPath: string): TicketsFile {
 /**
  * Save tickets to file
  */
-function saveTicketsFile(ticketsPath: string, ticketsData: TicketsFile): void {
+export function saveTicketsFile(ticketsPath: string, ticketsData: TicketsFile): void {
   writeFileSync(ticketsPath, JSON.stringify(ticketsData, null, 2), 'utf-8');
 }
 

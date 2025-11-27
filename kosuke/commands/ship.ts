@@ -2,13 +2,13 @@
  * Ship command - Implement a ticket from tickets.json
  *
  * This command takes a ticket ID, implements it following CLAUDE.md rules,
- * runs linting and fixing, and optionally performs a review step.
+ * runs linting, and optionally performs code review with ticket context.
  *
  * Usage:
  *   kosuke ship --ticket=SCHEMA-1                    # Implement ticket (local only)
- *   kosuke ship --ticket=BACKEND-2 --review          # Implement with review
+ *   kosuke ship --ticket=BACKEND-2 --review          # Implement with code review
  *   kosuke ship --ticket=FRONTEND-1 --commit         # Implement and commit to current branch
- *   kosuke ship --ticket=BACKEND-3 --pr              # Implement and create PR (new branch)
+ *   kosuke ship --ticket=BACKEND-3 --review --commit # Implement, review, then commit
  *   kosuke ship --ticket=FRONTEND-1 --test           # Implement and run tests
  *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
  *   kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db
@@ -20,7 +20,6 @@ import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { commitAndPushCurrentBranch } from '../utils/git.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { runWithPR } from '../utils/pr-orchestrator.js';
 import { findTicket, loadTicketsFile, updateTicketStatus } from '../utils/tickets-manager.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
 import { reviewCore } from './review.js';
@@ -38,7 +37,10 @@ function buildImplementationPrompt(ticket: Ticket, dbUrl: string): string {
 **Database Schema Changes (CRITICAL FOR SCHEMA TICKETS):**
 This is a SCHEMA ticket. After making changes to database schema files:
 1. Run \`bun run db:generate\` to generate Drizzle migrations
-2. Run \`POSTGRES_URL="${dbUrl}" bun run db:migrate\` to apply migrations to the database
+2. **CRITICAL**: Run \`POSTGRES_URL="${dbUrl}" bun run db:migrate\` to apply migrations to the database
+   ⚠️ **MIGRATIONS MUST BE APPLIED AFTER GENERATION** - Generating migrations alone does NOT update the database!
+   ⚠️ The database schema will NOT change until you run \`db:migrate\` to apply the generated migrations
+   ⚠️ Skipping this step will cause runtime errors when the app expects the new schema
 3. Run \`POSTGRES_URL="${dbUrl}" bun run db:seed\` to seed the database with initial data
 4. Verify migration files were created in lib/db/migrations/
 5. Handle any migration errors before proceeding
@@ -184,15 +186,20 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     const lintResult = await runComprehensiveLinting(cwd);
     console.log(`\n✅ Linting completed (${lintResult.fixCount} fixes applied)`);
 
-    // 7. Review phase (if review flag is set)
-    let reviewPerformed = false;
+    // 7. Review phase (if review flag is set) - with ticket context
     if (review) {
       console.log(`\n${'='.repeat(60)}`);
       console.log(`🔍 Phase 3: Code Review (Git Diff)`);
       console.log(`${'='.repeat(60)}\n`);
 
-      // Use existing review logic from review.ts
-      const reviewResult = await reviewCore({ directory: cwd });
+      const reviewResult = await reviewCore({
+        directory: cwd,
+        context: {
+          ticketId: ticket.id,
+          ticketTitle: ticket.title,
+          ticketDescription: ticket.description,
+        },
+      });
 
       reviewFixCount = reviewResult.fixesApplied;
       totalInputTokens += reviewResult.tokensUsed.input;
@@ -202,10 +209,8 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       totalCost += reviewResult.cost;
 
       console.log(
-        `\n✨ Review completed (${reviewResult.issuesFound} issues found, ${reviewFixCount} total fixes applied)`
+        `\n✨ Review completed (${reviewResult.issuesFound} issues found, ${reviewFixCount} fixes applied)`
       );
-
-      reviewPerformed = true;
     }
 
     // 8. Test phase (if test flag is set) - ITERATIVE
@@ -298,10 +303,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       success: true,
       implementationFixCount,
       lintFixCount: lintResult.fixCount,
-      reviewPerformed,
       reviewFixCount,
-      gitDiffReviewed: false,
-      gitDiffReviewFixCount: 0,
       tokensUsed: {
         input: totalInputTokens,
         output: totalOutputTokens,
@@ -321,10 +323,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       success: false,
       implementationFixCount,
       lintFixCount: 0,
-      reviewPerformed: false,
       reviewFixCount,
-      gitDiffReviewed: false,
-      gitDiffReviewFixCount: 0,
       tokensUsed: {
         input: totalInputTokens,
         output: totalOutputTokens,
@@ -338,39 +337,13 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
 }
 
 /**
- * Review git diff after implementation
- */
-async function reviewGitDiff(cwd?: string): Promise<{
-  fixCount: number;
-  cost: number;
-  tokensUsed: {
-    input: number;
-    output: number;
-    cacheCreation: number;
-    cacheRead: number;
-  };
-}> {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`🔍 Reviewing Git Diff Against CLAUDE.md`);
-  console.log(`${'='.repeat(60)}\n`);
-
-  const result = await reviewCore({ directory: cwd });
-
-  return {
-    fixCount: result.fixesApplied,
-    cost: result.cost,
-    tokensUsed: result.tokensUsed,
-  };
-}
-
-/**
  * Main ship command
  */
 export async function shipCommand(options: ShipOptions): Promise<void> {
-  const { ticket: ticketId, commit = false, pr = false, directory, noLogs = false } = options;
+  const { ticket: ticketId, commit = false, directory, noLogs = false } = options;
   console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
 
-  // Resolve directory (for git operations and reviewGitDiff)
+  // Resolve directory
   const cwd = directory ? resolve(directory) : process.cwd();
 
   // Initialize logging context
@@ -383,148 +356,45 @@ export async function shipCommand(options: ShipOptions): Promise<void> {
       throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
 
-    // Validate mutually exclusive flags
-    if (commit && pr) {
-      throw new Error(
-        'Cannot use --commit and --pr together.\n' +
-          'Use --commit to push to current branch, or --pr to create a new branch with pull request.'
-      );
-    }
-
-    if (pr && !process.env.GITHUB_TOKEN) {
-      throw new Error('GITHUB_TOKEN environment variable is required for --pr flag');
-    }
-
     if (commit && !process.env.GITHUB_TOKEN) {
       throw new Error('GITHUB_TOKEN environment variable is required for --commit flag');
     }
 
-    // If --pr flag is provided, wrap with PR workflow
-    if (pr) {
-      let diffReviewCost = 0;
-      let diffReviewFixCount = 0;
+    // Run core implementation
+    const result = await shipCore(options);
 
-      const { result: shipResult, prInfo } = await runWithPR(
-        {
-          branchPrefix: `feat/ticket-${ticketId}`,
-          baseBranch: options.baseBranch,
-          commitMessage: `feat: implement ${ticketId}`,
-          prTitle: `feat: Implement ${ticketId}`,
-          prBody: `## 🎫 Ticket Implementation
+    if (!result.success) {
+      throw new Error(result.error || 'Ship failed');
+    }
 
-Implements ticket **${ticketId}** from tickets.json.
+    // Track metrics
+    logger.trackTokens(logContext, result.tokensUsed);
+    logContext.fixesApplied =
+      result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
 
-### 📋 Details
-- Implementation fixes: ${0} (will be filled by result)
-- Linting fixes: ${0}
-- Review performed: ${options.review ? 'Yes' : 'No'}
-
----
-
-🤖 *Generated by Kosuke CLI (\`kosuke ship --ticket=${ticketId} ${options.review ? '--review ' : ''}--pr\`)*`,
-          cwd,
-        },
-        async () => {
-          // Run core implementation
-          const result = await shipCore(options);
-
-          // Track metrics
-          logger.trackTokens(logContext, result.tokensUsed);
-          logContext.fixesApplied +=
-            result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
-
-          // Review git diff before committing
-          const diffReview = await reviewGitDiff(cwd);
-          diffReviewCost = diffReview.cost;
-          diffReviewFixCount = diffReview.fixCount;
-
-          // Track diff review metrics
-          logger.trackTokens(logContext, diffReview.tokensUsed);
-          logContext.fixesApplied += diffReview.fixCount;
-
-          return result;
-        }
-      );
-
-      // Display summary with updated values
-      console.log('\n✅ Ship completed successfully!');
-      console.log(`📊 Implementation fixes: ${shipResult.implementationFixCount}`);
-      console.log(`🔧 Linting fixes: ${shipResult.lintFixCount}`);
-      if (shipResult.reviewPerformed) {
-        console.log(`🔍 Pre-review fixes: ${shipResult.reviewFixCount}`);
-      }
-      console.log(`🔍 Git diff review fixes: ${diffReviewFixCount}`);
-      console.log(`💰 Total cost: $${(shipResult.cost + diffReviewCost).toFixed(4)}`);
-      console.log(`🔗 PR: ${prInfo.prUrl}`);
-
-      // Log successful execution
-      await logger.complete(logContext, 'success');
-      cleanupHandler();
-    } else if (commit) {
-      // Run core logic
-      const result = await shipCore(options);
-
-      if (!result.success) {
-        throw new Error(result.error || 'Ship failed');
-      }
-
-      // Track core metrics
-      logger.trackTokens(logContext, result.tokensUsed);
-      logContext.fixesApplied +=
-        result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
-
-      // Review git diff before committing
-      const diffReview = await reviewGitDiff(cwd);
-
-      // Track diff review metrics
-      logger.trackTokens(logContext, diffReview.tokensUsed);
-      logContext.fixesApplied += diffReview.fixCount;
-
-      // Commit and push to current branch
+    // Commit if flag is set
+    if (commit) {
       console.log('\n📝 Committing and pushing to current branch...');
       await commitAndPushCurrentBranch(`feat: implement ${ticketId}`, cwd);
       console.log('   ✅ Changes committed and pushed\n');
-
-      console.log('\n✅ Ship completed successfully!');
-      console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
-      console.log(`🔧 Linting fixes: ${result.lintFixCount}`);
-      if (result.reviewPerformed) {
-        console.log(`🔍 Pre-review fixes: ${result.reviewFixCount}`);
-      }
-      console.log(`🔍 Git diff review fixes: ${diffReview.fixCount}`);
-      console.log(`💰 Total cost: $${(result.cost + diffReview.cost).toFixed(4)}`);
-
-      // Log successful execution
-      await logger.complete(logContext, 'success');
-      cleanupHandler();
-    } else {
-      // Run core logic without any git operations
-      const result = await shipCore(options);
-
-      if (!result.success) {
-        throw new Error(result.error || 'Ship failed');
-      }
-
-      // Track core metrics
-      logger.trackTokens(logContext, result.tokensUsed);
-      logContext.fixesApplied +=
-        result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
-
-      console.log('\n✅ Ship completed successfully!');
-      console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
-      console.log(`🔧 Linting fixes: ${result.lintFixCount}`);
-      if (result.reviewPerformed) {
-        console.log(`🔍 Review fixes: ${result.reviewFixCount}`);
-      }
-      console.log(`💰 Total cost: $${result.cost.toFixed(4)}`);
-      console.log(
-        '\nℹ️  Changes applied locally. Use --commit to push or --pr to create a pull request.'
-      );
-
-      // Log successful execution
-      await logger.complete(logContext, 'success');
-      cleanupHandler();
     }
+
+    // Display summary
+    console.log('\n✅ Ship completed successfully!');
+    console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
+    console.log(`🔧 Linting fixes: ${result.lintFixCount}`);
+    if (result.reviewFixCount > 0) {
+      console.log(`🔍 Review fixes: ${result.reviewFixCount}`);
+    }
+    console.log(`💰 Total cost: $${result.cost.toFixed(4)}`);
+
+    if (!commit) {
+      console.log('\nℹ️  Changes applied locally. Use --commit to push to current branch.');
+    }
+
+    // Log successful execution
+    await logger.complete(logContext, 'success');
+    cleanupHandler();
   } catch (error) {
     console.error('\n❌ Ship failed:', error);
 

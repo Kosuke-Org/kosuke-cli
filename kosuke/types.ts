@@ -129,10 +129,8 @@ export interface TicketsResult {
 
 export interface ShipOptions {
   ticket: string; // Ticket ID (e.g., "SCHEMA-1")
-  review?: boolean; // Enable review step
+  review?: boolean; // Enable review step with ticket context
   commit?: boolean; // Commit and push to current branch
-  pr?: boolean; // Create pull request (new branch)
-  baseBranch?: string; // Base branch for PR
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   test?: boolean; // Run tests after implementation (iterative test+fix)
   url?: string; // Base URL for testing (default: http://localhost:3000)
@@ -147,11 +145,21 @@ export interface BuildOptions {
   directory?: string; // Directory to run build in (default: cwd)
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   dbUrl?: string; // Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
+  reset?: boolean; // Reset all tickets to "Todo" status before processing
+  confirm?: boolean; // Ask for confirmation before proceeding to next ticket
+  noCommit?: boolean; // Skip committing changes (default: false, commits are made)
   noLogs?: boolean;
+}
+
+export interface ReviewContext {
+  ticketId: string;
+  ticketTitle: string;
+  ticketDescription: string;
 }
 
 export interface ReviewOptions {
   directory?: string; // Directory to review (default: cwd)
+  context?: ReviewContext; // Optional ticket context for targeted review
   noLogs?: boolean;
 }
 
@@ -160,10 +168,7 @@ export interface ShipResult {
   success: boolean;
   implementationFixCount: number;
   lintFixCount: number;
-  reviewPerformed: boolean;
   reviewFixCount: number;
-  gitDiffReviewed: boolean;
-  gitDiffReviewFixCount: number;
   tokensUsed: {
     input: number;
     output: number;

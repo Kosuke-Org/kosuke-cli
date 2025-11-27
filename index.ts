@@ -121,14 +121,12 @@ async function main() {
         if (!ticketArg) {
           console.error('❌ --ticket flag is required\n');
           console.log(
-            'Usage: kosuke ship --ticket=SCHEMA-1 [--review] [--test] [--commit | --pr] [--directory=<path>] [--db-url=<url>]'
+            'Usage: kosuke ship --ticket=SCHEMA-1 [--test] [--commit] [--directory=<path>] [--db-url=<url>]'
           );
           console.log('\nExamples:');
           console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
-          console.log('  kosuke ship --ticket=BACKEND-2 --review      # With review');
           console.log('  kosuke ship --ticket=FRONTEND-1 --test       # With testing');
           console.log('  kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch');
-          console.log('  kosuke ship --ticket=BACKEND-3 --pr          # Create PR (new branch)');
           console.log(
             '  kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory'
           );
@@ -140,11 +138,8 @@ async function main() {
 
         const options = {
           ticket: ticketArg,
-          review: args.includes('--review'),
           test: args.includes('--test'),
           commit: args.includes('--commit'),
-          pr: args.includes('--pr'),
-          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
@@ -163,6 +158,9 @@ async function main() {
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
+          reset: args.includes('--reset'),
+          confirm: args.includes('--confirm'),
+          noCommit: args.includes('--no-commit'),
           noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
@@ -339,15 +337,12 @@ COMMANDS:
 
   ship --ticket=<ID> [options]
     Implement a single ticket from tickets.json
-    Follows CLAUDE.md rules, runs linting, and optionally performs review and tests
+    Follows CLAUDE.md rules, runs linting, and optionally runs tests
 
     Options:
       --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
-      --review              Perform code review step after implementation
       --test                Run E2E tests after implementation
       --commit              Commit and push to current branch
-      --pr                  Create new branch and pull request (mutually exclusive with --commit)
-      --base-branch=<name>  Base branch for PR (default: current branch)
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --directory=<path>    Directory to run ship in (default: current directory)
       --dir=<path>          Alias for --directory
@@ -355,17 +350,15 @@ COMMANDS:
 
     Examples:
       kosuke ship --ticket=SCHEMA-1                # Implement locally only
-      kosuke ship --ticket=BACKEND-2 --review      # Implement with review
       kosuke ship --ticket=FRONTEND-1 --test       # Implement with testing
       kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch
-      kosuke ship --ticket=BACKEND-3 --pr          # Create new branch + PR
       kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
       kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory
       kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
-    Automatically commits each ticket to current branch
+    By default, commits each ticket to current branch
     Processes tickets in order: Schema → Backend → Frontend
     Frontend tickets automatically include E2E testing
 
@@ -374,12 +367,19 @@ COMMANDS:
       --dir=<path>          Alias for --directory
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --db-url=<url>        Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
+      --reset               Reset all tickets to "Todo" status before processing (start from scratch)
+      --confirm             Ask for confirmation before proceeding to next ticket (useful for review)
+      --no-commit           Skip committing changes (apply changes locally only)
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
       kosuke build                            # Process and commit all tickets
       gh pr create                            # Create PR manually
 
+      kosuke build --no-commit                # Process tickets without committing
+      kosuke build --reset                    # Reset all tickets and start from scratch
+      kosuke build --confirm                  # Ask for confirmation after each ticket
+      kosuke build --reset --confirm          # Reset and confirm before each ticket
       kosuke build --tickets=custom.json      # Use custom tickets file
       kosuke build --directory=./my-project   # Run build in specific directory
       kosuke build --db-url=postgres://user:pass@host:5432/db  # Custom DB
