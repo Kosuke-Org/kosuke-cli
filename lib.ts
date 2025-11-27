@@ -9,10 +9,13 @@
  * import {
  *   analyseCommand,
  *   getCodeCore,
+ *   shipCore,
+ *   runTestsWithRetry,
  *   discoverFiles,
  *   runLint,
  *   logger,
  *   withCommandTracking,
+ *   type Ticket,
  *   type ValidationResult,
  *   type CommandExecutionContext
  * } from '@kosuke-ai/cli';
@@ -25,6 +28,29 @@
  *   repo: 'owner/repo',
  *   query: 'How does authentication work?'
  * });
+ *
+ * // Ship a ticket (ticket-agnostic)
+ * const ticket: Ticket = {
+ *   id: 'FRONTEND-1',
+ *   title: 'Implement login page',
+ *   description: 'Create a login page with email/password...',
+ *   estimatedEffort: 5,
+ *   status: 'InProgress'
+ * };
+ * const shipResult = await shipCore({
+ *   ticketData: ticket,
+ *   review: true,
+ *   directory: './my-project'
+ * });
+ *
+ * // Run tests with retry logic
+ * if (ticket.id.startsWith('FRONTEND-')) {
+ *   const testResult = await runTestsWithRetry({
+ *     ticket,
+ *     cwd: './my-project',
+ *     maxRetries: 3
+ *   });
+ * }
  *
  * // Use validation utilities
  * const lintResult: ValidationResult = await runLint();
@@ -50,10 +76,11 @@ export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 export { requirementsCommand, requirementsCore } from './kosuke/commands/requirements.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
-export { shipCommand, shipCore } from './kosuke/commands/ship.js';
+export { shipCore } from './kosuke/commands/ship.js';
 export { buildCommand } from './kosuke/commands/build.js';
 export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
 export { testCommand, testCore } from './kosuke/commands/test.js';
+export { runTestsWithRetry } from './kosuke/utils/test-runner.js';
 
 // Re-export utilities
 export { discoverFiles } from './kosuke/utils/file-discovery.js';
@@ -92,6 +119,8 @@ export type {
   ReviewResult,
   TestOptions,
   TestResult,
+  TestRunnerOptions,
+  TestRunnerResult,
   // Testing utility types
   AnalysisResult,
   TestFailure,

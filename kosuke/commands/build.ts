@@ -2,15 +2,18 @@
  * Build command - Batch process all tickets from tickets.json
  *
  * This command processes all "Todo" and "Error" tickets sequentially,
- * implementing each one using the ship command and committing individually.
- * Frontend tickets automatically include the --test flag.
- * All tickets automatically include the --review flag for quality assurance.
+ * implementing each one using the ship core engine and committing individually.
+ * Frontend tickets automatically run tests (unless --no-test is specified).
+ * All tickets include code review by default (unless --no-review is specified).
  *
  * Usage:
  *   kosuke build                           # Process and auto-commit all tickets
  *   kosuke build --ask-commit              # Ask before committing each ticket
  *   kosuke build --ask-confirm             # Ask before processing each ticket
  *   kosuke build --reset                   # Reset all tickets to "Todo" and process from scratch
+ *   kosuke build --no-review               # Skip code review phase
+ *   kosuke build --no-test                 # Skip testing phase for frontend tickets
+ *   kosuke build --headed                  # Show browser during testing
  *   kosuke build --tickets=path/to/tickets.json
  *   kosuke build --db-url=postgres://user:pass@host:5432/db
  *
@@ -25,8 +28,14 @@ import { join, resolve } from 'path';
 import * as readline from 'readline';
 import simpleGit from 'simple-git';
 import type { BuildOptions, Ticket } from '../types.js';
-import { loadTicketsFile, saveTicketsFile, type TicketsFile } from '../utils/tickets-manager.js';
-import { shipCommand } from './ship.js';
+import {
+  loadTicketsFile,
+  saveTicketsFile,
+  updateTicketStatus,
+  type TicketsFile,
+} from '../utils/tickets-manager.js';
+import { shipCore } from './ship.js';
+import { runTestsWithRetry } from '../utils/test-runner.js';
 
 /**
  * Prompt user for confirmation to continue
@@ -113,6 +122,11 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       reset = false,
       askConfirm = false,
       askCommit = false,
+      review = true,
+      test = true,
+      url,
+      headed,
+      debug,
       noLogs = false,
     } = options;
 
@@ -183,23 +197,61 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       console.log('='.repeat(80) + '\n');
 
       try {
-        // Determine if this is a frontend ticket
-        const isFrontendTicket = ticket.id.startsWith('FRONTEND-');
+        // Step 1: Update status to InProgress
+        console.log('📝 Updating ticket status to InProgress...');
+        updateTicketStatus(ticketsPath, ticket.id, 'InProgress');
+        console.log('   ✅ Status updated\n');
 
-        // Step 1: Ship implements the ticket (no commit)
-        await shipCommand({
-          ticket: ticket.id,
-          ticketsFile,
-          test: isFrontendTicket,
-          review: true, // Always perform code review during build
+        // Step 2: Ship implements the ticket (no ticket lifecycle management)
+        const shipResult = await shipCore({
+          ticketData: ticket, // Pass ticket object directly
+          review, // Controlled by build options
           directory: cwd,
           dbUrl,
           noLogs,
         });
 
-        console.log(`\n✅ ${ticket.id} implemented successfully`);
+        if (!shipResult.success) {
+          throw new Error(shipResult.error || 'Ship failed');
+        }
 
-        // Step 2: Build handles commit logic
+        console.log(`\n✅ ${ticket.id} implemented successfully`);
+        console.log(`📊 Implementation fixes: ${shipResult.implementationFixCount}`);
+        console.log(`🔧 Linting fixes: ${shipResult.lintFixCount}`);
+        if (shipResult.reviewFixCount > 0) {
+          console.log(`🔍 Review fixes: ${shipResult.reviewFixCount}`);
+        }
+        console.log(`💰 Ship cost: $${shipResult.cost.toFixed(4)}`);
+
+        // Step 3: Run tests if frontend ticket and test enabled
+        const isFrontendTicket = ticket.id.startsWith('FRONTEND-');
+
+        if (test && isFrontendTicket) {
+          console.log(`\n${'='.repeat(60)}`);
+          console.log(`🧪 Phase: Testing (Iterative)`);
+          console.log(`${'='.repeat(60)}\n`);
+
+          const testResult = await runTestsWithRetry({
+            ticket,
+            cwd,
+            url,
+            headed,
+            debug,
+            maxRetries: 3,
+          });
+
+          console.log(
+            `\n✨ Testing completed (${testResult.fixesApplied} fixes applied over ${testResult.attempts} iterations)`
+          );
+          console.log(`💰 Testing cost: $${testResult.cost.toFixed(4)}`);
+        }
+
+        // Step 4: Update ticket status to Done
+        console.log('\n📝 Updating ticket status to Done...');
+        updateTicketStatus(ticketsPath, ticket.id, 'Done');
+        console.log(`   ✅ Ticket ${ticket.id} marked as Done\n`);
+
+        // Step 5: Commit (if not asking)
         if (askCommit) {
           // Interactive: ask before committing
           const shouldCommit = await promptConfirmation(`\n❓ Commit changes for ${ticket.id}?`);
@@ -207,7 +259,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
           if (shouldCommit) {
             await commitTicket(ticket, cwd);
           } else {
-            console.log('   ⏭️  Skipped commit (ticket marked as Done)\n');
+            console.log('   ⏭️  Skipped commit\n');
           }
         } else {
           // Default: auto-commit
@@ -228,6 +280,10 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`\n❌ Failed to process ${ticket.id}: ${errorMessage}`);
+
+        // Update ticket status to Error
+        updateTicketStatus(ticketsPath, ticket.id, 'Error', errorMessage);
+
         console.error('\n❌ Build stopped due to ticket failure');
         console.error('ℹ️  Fix the issue and run build again to resume from failed tickets\n');
         throw error;

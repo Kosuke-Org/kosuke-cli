@@ -1,28 +1,50 @@
 /**
- * Ship command - Implement a ticket from tickets.json
+ * Ship Core - Ticket-agnostic implementation engine
  *
- * This command takes a ticket ID, implements it following CLAUDE.md rules,
- * runs linting, and optionally performs code review with ticket context.
+ * This module provides the core implementation logic for tickets.
+ * It is designed to be called programmatically with ticket data,
+ * making it independent of tickets.json or any ticket management system.
  *
- * Note: Ship implements tickets but does NOT commit. Use 'build' command for commits.
+ * Features:
+ * - Implements tickets following CLAUDE.md rules
+ * - Runs comprehensive linting
+ * - Optionally performs code review with ticket context
+ * - Does NOT manage ticket lifecycle (status updates, commits, etc.)
  *
- * Usage:
- *   kosuke ship --ticket=SCHEMA-1                    # Implement ticket (local only)
- *   kosuke ship --ticket=BACKEND-2 --review          # Implement with code review
- *   kosuke ship --ticket=FRONTEND-1 --test           # Implement and run tests
- *   kosuke ship --ticket=SCHEMA-1 --tickets=path/to/tickets.json
- *   kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db
+ * Usage (Programmatic):
+ *   import { shipCore } from './commands/ship.js';
+ *
+ *   const result = await shipCore({
+ *     ticketData: { id: 'SCHEMA-1', title: '...', description: '...' },
+ *     review: true,
+ *     directory: './my-project',
+ *   });
+ *
+ * Note: The CLI command 'kosuke ship' is deprecated.
+ *       Use 'kosuke build' instead for complete ticket workflow.
  */
 
 import { existsSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import type { ShipOptions, ShipResult, Ticket } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
-import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { findTicket, loadTicketsFile, updateTicketStatus } from '../utils/tickets-manager.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
 import { reviewCore } from './review.js';
-import { testCore } from './test.js';
+
+/**
+ * Validate ticket data has all required fields
+ */
+function validateTicketData(ticketData: Ticket): void {
+  if (!ticketData.id || typeof ticketData.id !== 'string') {
+    throw new Error('Invalid ticket: id is required and must be a string');
+  }
+  if (!ticketData.title || typeof ticketData.title !== 'string') {
+    throw new Error('Invalid ticket: title is required and must be a string');
+  }
+  if (!ticketData.description || typeof ticketData.description !== 'string') {
+    throw new Error('Invalid ticket: description is required and must be a string');
+  }
+}
 
 /**
  * Build system prompt for ticket implementation
@@ -78,14 +100,16 @@ Begin by exploring the current codebase, then implement the ticket systematicall
 }
 
 /**
- * Core ship logic (git-agnostic, reusable)
+ * Core ship logic (ticket-agnostic, reusable)
+ * Implements a ticket without managing its lifecycle (status updates, etc.)
  */
 export async function shipCore(options: ShipOptions): Promise<ShipResult> {
+  // Validate ticket data
+  validateTicketData(options.ticketData);
+
+  const ticket = options.ticketData;
   const {
-    ticket: ticketId,
     review = false,
-    test = false,
-    ticketsFile = 'tickets.json',
     directory,
     dbUrl = 'postgres://postgres:postgres@localhost:5432/postgres',
   } = options;
@@ -98,7 +122,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       throw new Error(
         `Directory not found: ${cwd}\n` +
           `Please provide a valid directory using --directory=<path>\n` +
-          `Example: kosuke ship --ticket=SCHEMA-1 --directory=./my-project`
+          `Example: shipCore({ ticketData: ticket, directory: './my-project' })`
       );
     }
 
@@ -112,36 +136,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`📁 Using project directory: ${cwd}\n`);
   }
 
-  const ticketsPath = join(cwd, ticketsFile);
-
-  // 1. Load and validate ticket
-  console.log('📋 Loading ticket...');
-  const ticketsData = loadTicketsFile(ticketsPath);
-  const ticket = findTicket(ticketsData, ticketId);
-
-  if (!ticket) {
-    throw new Error(
-      `Ticket ${ticketId} not found in ${ticketsFile}\n` +
-        `Available tickets: ${ticketsData.tickets.map((t) => t.id).join(', ')}`
-    );
-  }
-
-  if (ticket.status === 'Done') {
-    throw new Error(
-      `Ticket ${ticketId} is already marked as Done.\n` +
-        `If you want to re-implement it, manually change its status to "Todo" in ${ticketsFile}`
-    );
-  }
-
-  console.log(`   ✅ Loaded ticket: ${ticket.id} - ${ticket.title}\n`);
-
-  // 2. Update status to InProgress
-  console.log('📝 Updating ticket status to InProgress...');
-  updateTicketStatus(ticketsPath, ticketId, 'InProgress');
-  console.log('   ✅ Status updated\n');
-
-  // 3. Context ready (using current working directory)
-  console.log('📁 Working in current directory context\n');
+  console.log(`📋 Implementing ticket: ${ticket.id} - ${ticket.title}\n`);
 
   // Determine ticket type
   const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
@@ -156,14 +151,14 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
   let reviewFixCount = 0;
 
   try {
-    // 5. Implementation phase
+    // 2. Implementation phase
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 Phase 1: Implementation`);
     console.log(`${'='.repeat(60)}\n`);
 
     const systemPrompt = buildImplementationPrompt(ticket, dbUrl);
 
-    const implementationResult = await runAgent(`Implement ticket ${ticketId}: ${ticket.title}`, {
+    const implementationResult = await runAgent(`Implement ticket ${ticket.id}: ${ticket.title}`, {
       systemPrompt,
       cwd,
       maxTurns: 40,
@@ -180,7 +175,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     console.log(`\n✨ Implementation completed (${implementationFixCount} changes made)`);
     console.log(`💰 Implementation cost: ${formatCostBreakdown(implementationResult)}`);
 
-    // 6. Linting phase
+    // 3. Linting phase
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🔧 Phase 2: Linting & Quality Checks`);
     console.log(`${'='.repeat(60)}\n`);
@@ -188,7 +183,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     const lintResult = await runComprehensiveLinting(cwd);
     console.log(`\n✅ Linting completed (${lintResult.fixCount} fixes applied)`);
 
-    // 7. Review phase (if review flag is set) - SKIP for SCHEMA tickets
+    // 4. Review phase (if review flag is set) - SKIP for SCHEMA tickets
     if (review && !isSchemaTicket) {
       console.log(`\n${'='.repeat(60)}`);
       console.log(`🔍 Phase 3: Code Review (Git Diff)`);
@@ -219,93 +214,8 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       );
     }
 
-    // 8. Test phase (if test flag is set) - ITERATIVE
-    let testFixCount = 0;
-    let testIterations = 0;
-    const maxTestRetries = 3;
-
-    if (test) {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`🧪 Phase ${review ? '4' : '3'}: Testing (Iterative)`);
-      console.log(`${'='.repeat(60)}\n`);
-
-      let testsPassing = false;
-
-      for (let attempt = 1; attempt <= maxTestRetries; attempt++) {
-        testIterations = attempt;
-        console.log(`\n🧪 Test Attempt ${attempt}/${maxTestRetries}\n`);
-
-        // Run atomic test
-        const testResult = await testCore({
-          ticket: ticketId,
-          url: options.url,
-          headed: options.headed,
-          debug: options.debug,
-          ticketsFile,
-          directory: cwd,
-        });
-
-        totalInputTokens += testResult.tokensUsed.input;
-        totalOutputTokens += testResult.tokensUsed.output;
-        totalCacheCreationTokens += testResult.tokensUsed.cacheCreation;
-        totalCacheReadTokens += testResult.tokensUsed.cacheRead;
-        totalCost += testResult.cost;
-
-        if (testResult.success) {
-          testsPassing = true;
-          console.log('\n✅ Tests passed!');
-          break;
-        }
-
-        // If not last attempt, analyze and fix
-        if (attempt < maxTestRetries) {
-          console.log('\n🔍 Analyzing test failures...');
-
-          // Collect Docker logs for backend debugging
-          const { LogCollector } = await import('../utils/log-collector.js');
-          const logCollector = new LogCollector();
-          await logCollector.collectDockerLogs('30s');
-          const dockerLogs = logCollector.getErrors();
-
-          // Analyze errors and apply fixes
-          const { analyzeAndFix } = await import('../utils/error-analyzer.js');
-          const fixResult = await analyzeAndFix(
-            ticket,
-            testResult.output,
-            testResult.logs,
-            dockerLogs,
-            cwd
-          );
-
-          testFixCount += fixResult.fixesApplied;
-          totalInputTokens += fixResult.tokensUsed.input;
-          totalOutputTokens += fixResult.tokensUsed.output;
-          totalCacheCreationTokens += fixResult.tokensUsed.cacheCreation;
-          totalCacheReadTokens += fixResult.tokensUsed.cacheRead;
-          totalCost += fixResult.cost;
-
-          console.log(`\n🔧 Applied ${fixResult.fixesApplied} fixes`);
-          console.log(`💰 Fix cost: $${fixResult.cost.toFixed(4)}`);
-        }
-      }
-
-      if (!testsPassing) {
-        throw new Error(`Tests failed after ${maxTestRetries} attempts`);
-      }
-
-      console.log(
-        `\n✨ Testing completed (${testFixCount} fixes applied over ${testIterations} iterations)`
-      );
-      console.log(`💰 Testing cost: $${totalCost.toFixed(4)}`);
-    }
-
-    // 9. Update status to Done
-    console.log('\n📝 Updating ticket status to Done...');
-    updateTicketStatus(ticketsPath, ticketId, 'Done');
-    console.log('   ✅ Ticket marked as Done\n');
-
+    // 5. Return success result
     return {
-      ticketId,
       success: true,
       implementationFixCount,
       lintFixCount: lintResult.fixCount,
@@ -319,13 +229,11 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       cost: totalCost,
     };
   } catch (error) {
-    // Update ticket status to Error
+    // Return error result
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`\n❌ Implementation failed: ${errorMessage}`);
-    updateTicketStatus(ticketsPath, ticketId, 'Error', errorMessage);
 
     return {
-      ticketId,
       success: false,
       implementationFixCount,
       lintFixCount: 0,
@@ -339,58 +247,5 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
       cost: totalCost,
       error: errorMessage,
     };
-  }
-}
-
-/**
- * Main ship command
- */
-export async function shipCommand(options: ShipOptions): Promise<void> {
-  const { ticket: ticketId, noLogs = false } = options;
-  console.log(`🚢 Shipping Ticket: ${ticketId}\n`);
-
-  // Initialize logging context
-  const logContext = logger.createContext('ship', { noLogs });
-  const cleanupHandler = setupCancellationHandler(logContext);
-
-  try {
-    // Validate environment
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY environment variable is required');
-    }
-
-    // Run core implementation
-    const result = await shipCore(options);
-
-    if (!result.success) {
-      throw new Error(result.error || 'Ship failed');
-    }
-
-    // Track metrics
-    logger.trackTokens(logContext, result.tokensUsed);
-    logContext.fixesApplied =
-      result.implementationFixCount + result.lintFixCount + result.reviewFixCount;
-
-    // Display summary
-    console.log('\n✅ Ship completed successfully!');
-    console.log(`📊 Implementation fixes: ${result.implementationFixCount}`);
-    console.log(`🔧 Linting fixes: ${result.lintFixCount}`);
-    if (result.reviewFixCount > 0) {
-      console.log(`🔍 Review fixes: ${result.reviewFixCount}`);
-    }
-    console.log(`💰 Total cost: $${result.cost.toFixed(4)}`);
-    console.log('\nℹ️  Changes applied locally. Commits are handled by the build command.');
-
-    // Log successful execution
-    await logger.complete(logContext, 'success');
-    cleanupHandler();
-  } catch (error) {
-    console.error('\n❌ Ship failed:', error);
-
-    // Log failed execution
-    await logger.complete(logContext, 'error', error as Error);
-    cleanupHandler();
-
-    throw error;
   }
 }

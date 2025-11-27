@@ -128,13 +128,8 @@ export interface TicketsResult {
 }
 
 export interface ShipOptions {
-  ticket: string; // Ticket ID (e.g., "SCHEMA-1")
-  review?: boolean; // Enable review step with ticket context
-  ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
-  test?: boolean; // Run tests after implementation (iterative test+fix)
-  url?: string; // Base URL for testing (default: http://localhost:3000)
-  headed?: boolean; // Show browser during testing
-  debug?: boolean; // Enable debug mode
+  ticketData: Ticket; // Ticket object with all data (id, title, description, etc.)
+  review?: boolean; // Enable review step with ticket context (default: false)
   directory?: string; // Directory to run ship in (default: cwd)
   dbUrl?: string; // Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
   noLogs?: boolean;
@@ -147,6 +142,11 @@ export interface BuildOptions {
   reset?: boolean; // Reset all tickets to "Todo" status before processing
   askConfirm?: boolean; // Ask for confirmation before proceeding to next ticket
   askCommit?: boolean; // Ask before committing each ticket (default: auto-commit)
+  review?: boolean; // Enable code review phase (default: true)
+  test?: boolean; // Enable testing phase for frontend tickets (default: true)
+  url?: string; // Base URL for testing (default: http://localhost:3000)
+  headed?: boolean; // Show browser during testing
+  debug?: boolean; // Enable debug mode for tests
   noLogs?: boolean;
 }
 
@@ -163,7 +163,6 @@ export interface ReviewOptions {
 }
 
 export interface ShipResult {
-  ticketId: string;
   success: boolean;
   implementationFixCount: number;
   lintFixCount: number;
@@ -218,6 +217,28 @@ export interface TestResult {
   };
   cost: number;
   error?: string;
+}
+
+export interface TestRunnerOptions {
+  ticket: Ticket;
+  cwd: string;
+  url?: string;
+  headed?: boolean;
+  debug?: boolean;
+  maxRetries?: number;
+}
+
+export interface TestRunnerResult {
+  success: boolean;
+  attempts: number;
+  fixesApplied: number;
+  tokensUsed: {
+    input: number;
+    output: number;
+    cacheCreation: number;
+    cacheRead: number;
+  };
+  cost: number;
 }
 
 // CLI Logging types

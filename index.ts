@@ -10,7 +10,6 @@
  *   requirements            Interactive requirements gathering
  *   getcode                 Explore GitHub repositories and fetch code
  *   tickets                 Generate implementation tickets from requirements
- *   ship --ticket=<ID>      Implement a single ticket from tickets.json
  *   build                   Batch process all tickets from tickets.json
  *   review                  Review codebase against CLAUDE.md rules
  *   test                    Run E2E tests with automated fixing (ticket or custom prompt)
@@ -22,7 +21,6 @@
  *   bun run kosuke requirements
  *   bun run kosuke getcode "query"
  *   bun run kosuke tickets
- *   bun run kosuke ship --ticket=SCHEMA-1
  *   bun run kosuke build
  *   bun run kosuke review
  *   bun run kosuke test --ticket=FRONTEND-1 OR --prompt="Test login flow"
@@ -33,16 +31,15 @@
  */
 
 import 'dotenv/config';
-import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { analyseCommand } from './kosuke/commands/analyse.js';
+import { buildCommand } from './kosuke/commands/build.js';
+import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
 import { lintCommand } from './kosuke/commands/lint.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
-import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
-import { ticketsCommand } from './kosuke/commands/tickets.js';
-import { shipCommand } from './kosuke/commands/ship.js';
-import { buildCommand } from './kosuke/commands/build.js';
 import { reviewCommand } from './kosuke/commands/review.js';
+import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { testCommand } from './kosuke/commands/test.js';
+import { ticketsCommand } from './kosuke/commands/tickets.js';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -116,41 +113,6 @@ async function main() {
         break;
       }
 
-      case 'ship': {
-        const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
-        if (!ticketArg) {
-          console.error('❌ --ticket flag is required\n');
-          console.log(
-            'Usage: kosuke ship --ticket=SCHEMA-1 [--test] [--commit] [--directory=<path>] [--db-url=<url>]'
-          );
-          console.log('\nExamples:');
-          console.log('  kosuke ship --ticket=SCHEMA-1                # Local only');
-          console.log('  kosuke ship --ticket=FRONTEND-1 --test       # With testing');
-          console.log('  kosuke ship --ticket=FRONTEND-1 --commit     # Commit to current branch');
-          console.log(
-            '  kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory'
-          );
-          console.log(
-            '  kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB'
-          );
-          process.exit(1);
-        }
-
-        const options = {
-          ticket: ticketArg,
-          test: args.includes('--test'),
-          commit: args.includes('--commit'),
-          ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
-          directory:
-            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
-            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
-          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
-          noLogs: args.includes('--no-logs'),
-        };
-        await shipCommand(options);
-        break;
-      }
-
       case 'build': {
         const options = {
           directory:
@@ -161,6 +123,11 @@ async function main() {
           reset: args.includes('--reset'),
           askConfirm: args.includes('--ask-confirm'),
           askCommit: args.includes('--ask-commit'),
+          review: !args.includes('--no-review'), // Default true, disabled with --no-review
+          test: !args.includes('--no-test'), // Default true, disabled with --no-test
+          url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
+          headed: args.includes('--headed'),
+          debug: args.includes('--debug'),
           noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
@@ -335,34 +302,12 @@ COMMANDS:
       kosuke tickets --directory=./projects/my-app      # Analyze specific directory
       kosuke tickets --dir=./my-app --path=docs/spec.md # Custom directory and requirements path
 
-  ship --ticket=<ID> [options]
-    Implement a single ticket from tickets.json
-    Follows CLAUDE.md rules, runs linting, and optionally runs tests
-    Note: Ship implements tickets but does NOT commit. Use 'build' for commits.
-
-    Options:
-      --ticket=<ID>         Ticket ID to implement (required, e.g., SCHEMA-1)
-      --test                Run E2E tests after implementation
-      --review              Perform code review with ticket context
-      --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
-      --directory=<path>    Directory to run ship in (default: current directory)
-      --dir=<path>          Alias for --directory
-      --db-url=<url>        Database URL for migrations (default: postgres://postgres:postgres@postgres:5432/postgres)
-
-    Examples:
-      kosuke ship --ticket=SCHEMA-1                # Implement locally only
-      kosuke ship --ticket=FRONTEND-1 --test       # Implement with testing
-      kosuke ship --ticket=BACKEND-2 --review      # Implement with code review
-      kosuke ship --ticket=SCHEMA-1 --tickets=custom.json
-      kosuke ship --ticket=SCHEMA-1 --directory=./my-project  # Specific directory
-      kosuke ship --ticket=SCHEMA-1 --db-url=postgres://user:pass@host:5432/db  # Custom DB
-
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
     Implements and commits each ticket individually to current branch
     Processes tickets in order: Schema → Backend → Frontend
-    Frontend tickets automatically include E2E testing
-    All tickets automatically include code review for quality assurance
+    Frontend tickets automatically include E2E testing (unless --no-test)
+    All tickets include code review by default (unless --no-review)
 
     Options:
       --directory=<path>    Directory to run build in (default: current directory)
@@ -372,6 +317,11 @@ COMMANDS:
       --reset               Reset all tickets to "Todo" status before processing (start from scratch)
       --ask-confirm         Ask for confirmation before proceeding to next ticket (useful for review)
       --ask-commit          Ask before committing each ticket (default: auto-commit after each ticket)
+      --no-review           Skip code review phase (enabled by default)
+      --no-test             Skip testing phase for frontend tickets (enabled by default)
+      --url=<URL>           Base URL for testing (default: http://localhost:3000)
+      --headed              Show browser during testing (visible GUI window for debugging)
+      --debug               Enable Playwright inspector for tests
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
@@ -382,6 +332,8 @@ COMMANDS:
       kosuke build --ask-confirm              # Ask before processing each ticket
       kosuke build --ask-commit --ask-confirm # Fully interactive mode
       kosuke build --reset                    # Reset all tickets and start from scratch
+      kosuke build --no-review --no-test      # Skip review and testing (fastest)
+      kosuke build --headed                   # Show browser during tests
       kosuke build --tickets=custom.json      # Use custom tickets file
       kosuke build --directory=./my-project   # Run build in specific directory
       kosuke build --db-url=postgres://user:pass@host:5432/db  # Custom DB
