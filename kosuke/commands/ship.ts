@@ -216,7 +216,7 @@ export async function shipCore(options: ShipOptions): Promise<ShipResult> {
     test = false,
     ticketsFile = 'tickets.json',
     directory,
-    dbUrl = 'postgres://postgres:postgres@postgres:5432/postgres',
+    dbUrl = 'postgres://postgres:postgres@localhost:5432/postgres',
   } = options;
 
   // 1. Validate and resolve directory

@@ -17,10 +17,10 @@
  *   gh pr create
  */
 
-import { readFileSync, existsSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { join, resolve } from 'path';
-import { shipCommand } from './ship.js';
 import type { BuildOptions, Ticket } from '../types.js';
+import { shipCommand } from './ship.js';
 
 interface TicketsFile {
   generatedAt: string;
@@ -54,7 +54,7 @@ function loadTicketsFile(ticketsPath: string): TicketsFile {
  */
 function getTicketsToProcess(ticketsData: TicketsFile): Ticket[] {
   // Get all Todo and Error tickets (automatic retry on Error)
-  let tickets = ticketsData.tickets.filter((t) => t.status === 'Todo' || t.status === 'Error');
+  const tickets = ticketsData.tickets.filter((t) => t.status === 'Todo' || t.status === 'Error');
 
   // Sort by phase: SCHEMA -> BACKEND -> FRONTEND
   tickets.sort((a, b) => {
@@ -96,7 +96,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
     const {
       directory,
       ticketsFile = 'tickets.json',
-      dbUrl = 'postgres://postgres:postgres@postgres:5432/postgres',
+      dbUrl = 'postgres://postgres:postgres@localhost:5432/postgres',
       noLogs = false,
     } = options;
 

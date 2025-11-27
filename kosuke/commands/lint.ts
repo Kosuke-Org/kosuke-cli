@@ -5,11 +5,19 @@
  * give errors to Claude, let it fix them
  */
 
-import { runLint, runFormat, runTypecheck } from '../utils/validator.js';
-import { runWithPR } from '../utils/pr-orchestrator.js';
-import { runAgent } from '../utils/claude-agent.js';
 import { execSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import type { LintOptions } from '../types.js';
+import { runAgent } from '../utils/claude-agent.js';
+import { runWithPR } from '../utils/pr-orchestrator.js';
+import {
+  detectPackageManager,
+  readPackageJsonScripts,
+  runFormat,
+  runLint,
+  runTypecheck,
+} from '../utils/validator.js';
 
 interface ValidationStep {
   name: string;
@@ -101,6 +109,73 @@ async function runKnip(cwd: string = process.cwd()): Promise<{
 }
 
 /**
+ * Load CLAUDE.md rules from workspace
+ */
+function loadClaudeRules(cwd: string = process.cwd()): string | null {
+  const claudePath = join(cwd, 'CLAUDE.md');
+
+  if (!existsSync(claudePath)) {
+    console.warn('⚠️  CLAUDE.md not found in workspace root. Proceeding without project rules.');
+    return null;
+  }
+
+  try {
+    return readFileSync(claudePath, 'utf-8');
+  } catch (error) {
+    console.warn(`⚠️  Failed to read CLAUDE.md: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Build command-specific system prompt with CLAUDE.md context
+ */
+function buildFixSystemPrompt(stepName: string, cwd: string, claudeRules: string | null): string {
+  const packageManager = detectPackageManager(cwd);
+  const scripts = readPackageJsonScripts(cwd);
+
+  // Map step names to commands
+  const commandMap: Record<string, string> = {
+    '🎨 Format': scripts?.format ? `${packageManager} run format` : 'prettier --write .',
+    '🔍 Lint': scripts?.lint ? `${packageManager} run lint` : 'eslint . --fix',
+    '🔎 TypeCheck': scripts?.typecheck ? `${packageManager} run typecheck` : 'tsc --noEmit',
+    '🧪 Tests': scripts?.test ? `${packageManager} run test` : '',
+    '🔪 Knip': scripts?.knip ? `${packageManager} run knip` : '',
+  };
+
+  const fixCommand = commandMap[stepName] || '';
+
+  const projectRulesSection = claudeRules
+    ? `\n\n**Project Guidelines (CLAUDE.md):**
+The project has specific coding standards and guidelines. Follow them carefully:
+
+${claudeRules}
+
+`
+    : '';
+
+  const commandGuidance = fixCommand
+    ? `\n\n**Available Commands:**
+- Package Manager: ${packageManager}
+- Fix Command: \`${fixCommand}\`
+- You can run this command to verify your fixes, but you MUST fix the issues in the code files first.
+`
+    : '';
+
+  return `You are a code quality expert specialized in fixing ${stepName} errors.
+
+Your task is to analyze errors and fix them according to the project's quality standards.
+${projectRulesSection}${commandGuidance}
+**CRITICAL REQUIREMENTS:**
+- You MUST use the search_replace or write tools to fix ALL errors
+- Simply identifying issues without fixing them is NOT acceptable
+- Focus ONLY on fixing the specific errors provided. Do not make unnecessary changes.
+- Follow the project's CLAUDE.md guidelines when fixing code
+- Use ${packageManager} commands (NOT npm) if you need to run any commands
+- Make minimal, surgical fixes - don't refactor unrelated code`;
+}
+
+/**
  * Run Claude to fix code quality errors
  * Exported so other commands can use it
  */
@@ -111,17 +186,14 @@ export async function fixCodeQualityErrors(
 ): Promise<boolean> {
   console.log(`\n🤖 Using Claude to fix ${stepName} errors...\n`);
 
-  const workspaceRoot = cwd;
+  // Load CLAUDE.md if available
+  const claudeRules = loadClaudeRules(cwd);
+  if (claudeRules) {
+    console.log(`📖 Loaded CLAUDE.md (${claudeRules.length} characters)\n`);
+  }
 
-  // System prompt
-  const systemPrompt = `You are a code quality expert specialized in fixing ${stepName} errors.
-
-Your task is to analyze errors and fix them according to the project's quality standards.
-
-CRITICAL REQUIREMENTS:
-- You MUST use the search_replace or write tools to fix ALL errors
-- Simply identifying issues without fixing them is NOT acceptable
-- Focus ONLY on fixing the specific errors provided. Do not make unnecessary changes.`;
+  // Build command-specific system prompt
+  const systemPrompt = buildFixSystemPrompt(stepName, cwd, claudeRules);
 
   // User prompt
   const promptText = `The following ${stepName} errors need to be fixed:
@@ -136,10 +208,12 @@ ${errors}
 3. **IMMEDIATELY FIX each error using search_replace or write tools**
 4. Make minimal changes - only fix what's broken
 5. Ensure your fixes don't introduce new issues
+6. Follow the project's CLAUDE.md guidelines
 
 **IMPORTANT:**
 - Don't just describe errors - FIX them!
 - Every error you identify MUST be fixed
+- Use the project's coding standards from CLAUDE.md
 
 Start by reading the files with errors and fixing them one by one.`;
 
@@ -147,7 +221,7 @@ Start by reading the files with errors and fixing them one by one.`;
     const result = await runAgent(promptText, {
       systemPrompt,
       maxTurns: 20,
-      cwd: workspaceRoot,
+      cwd,
       verbosity: 'normal',
     });
 

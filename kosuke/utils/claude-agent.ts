@@ -138,26 +138,19 @@ function logAssistantMessage(text: string, verbosity: AgentVerbosity): void {
     return;
   }
 
-  // Truncate long messages for readability
-  const maxLength = verbosity === 'verbose' ? 500 : 100;
-  const display = trimmed.length > maxLength ? `${trimmed.substring(0, maxLength)}...` : trimmed;
-  console.log(`   💭 ${display}`);
+  // Show full message without truncation
+  console.log(`   💭 ${trimmed}`);
 }
 
 /**
- * Format tool arguments for display (truncate if too long)
+ * Format tool arguments for display (no truncation)
  */
-function formatToolArgs(input: unknown, maxLength: number = 80): string {
+function formatToolArgs(input: unknown): string {
   if (!input || typeof input !== 'object') {
     return JSON.stringify(input);
   }
 
-  const str = JSON.stringify(input);
-  if (str.length <= maxLength) {
-    return str;
-  }
-
-  return `${str.substring(0, maxLength)}...`;
+  return JSON.stringify(input);
 }
 
 /**
@@ -190,14 +183,13 @@ function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set
   } else if (toolName === 'run_terminal_cmd' && toolInput && typeof toolInput === 'object') {
     const input = toolInput as { command?: string };
     const cmd = input.command || 'command';
-    const truncated = cmd.length > 60 ? `${cmd.substring(0, 60)}...` : cmd;
-    console.log(`   🔧 Running: ${truncated}`);
+    console.log(`   🔧 Running: ${cmd}`);
   } else if (toolName === 'list_dir' && toolInput && typeof toolInput === 'object') {
     const input = toolInput as { target_directory?: string };
     console.log(`   📂 Listing directory: ${input.target_directory || '.'}`);
   } else {
     // Generic tool logging with arguments
-    const args = formatToolArgs(toolInput, 60);
+    const args = formatToolArgs(toolInput);
     console.log(`   🔧 ${toolName}(${args})`);
   }
 }
