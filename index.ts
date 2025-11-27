@@ -126,8 +126,8 @@ async function main() {
           review: !args.includes('--no-review'), // Default true, disabled with --no-review
           test: !args.includes('--no-test'), // Default true, disabled with --no-test
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
-          headed: args.includes('--headed'),
-          debug: args.includes('--debug'),
+          headless: args.includes('--headless'),
+          verbose: args.includes('--verbose'),
           noLogs: args.includes('--no-logs'),
         };
         await buildCommand(options);
@@ -155,17 +155,14 @@ async function main() {
           console.log('  --ticket=ID         Test a specific ticket from tickets.json');
           console.log('  --prompt="..."      Test with a custom prompt');
           console.log('  --url=URL           Base URL (default: http://localhost:3000)');
-          console.log('  --headed            Show browser window (default: headless)');
-          console.log('  --debug             Enable Playwright inspector');
-          console.log('  --update-baseline   Update visual baselines');
-          console.log('  --max-retries=N     Max fix attempts (default: 3)');
-          console.log('  --pr                Create PR with fixes');
+          console.log('  --headless          Run in headless mode (invisible browser)');
+          console.log('  --verbose           Enable verbose output');
           console.log('  --directory=PATH    Directory to test (default: cwd)');
           console.log('\nExamples:');
           console.log('  kosuke test --ticket=FRONTEND-1                    # Test ticket');
           console.log('  kosuke test --prompt="Test login flow"             # Test with prompt');
-          console.log('  kosuke test --ticket=FRONTEND-1 --headed           # Show browser');
-          console.log('  kosuke test --prompt="..." --pr                    # Create PR');
+          console.log('  kosuke test --ticket=FRONTEND-1 --verbose          # Verbose output');
+          console.log('  kosuke test --prompt="..." --headless              # Headless mode');
           process.exit(1);
         }
 
@@ -178,18 +175,12 @@ async function main() {
           ticket: ticketArg,
           prompt: promptArg,
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
-          headed: args.includes('--headed'),
-          debug: args.includes('--debug'),
-          updateBaseline: args.includes('--update-baseline'),
-          maxRetries: parseInt(
-            args.find((arg) => arg.startsWith('--max-retries='))?.split('=')[1] || '3'
-          ),
+          headless: args.includes('--headless'),
+          verbose: args.includes('--verbose'),
           ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
-          pr: args.includes('--pr'),
-          baseBranch: args.find((arg) => arg.startsWith('--base-branch='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await testCommand(options);
@@ -320,8 +311,8 @@ COMMANDS:
       --no-review           Skip code review phase (enabled by default)
       --no-test             Skip testing phase for frontend tickets (enabled by default)
       --url=<URL>           Base URL for testing (default: http://localhost:3000)
-      --headed              Show browser during testing (visible GUI window for debugging)
-      --debug               Enable Playwright inspector for tests
+      --headless            Run tests in headless mode (invisible browser)
+      --verbose             Enable verbose output for tests
 
     Examples:
       git checkout -b feat/implement-tickets  # Create feature branch first
@@ -333,7 +324,8 @@ COMMANDS:
       kosuke build --ask-commit --ask-confirm # Fully interactive mode
       kosuke build --reset                    # Reset all tickets and start from scratch
       kosuke build --no-review --no-test      # Skip review and testing (fastest)
-      kosuke build --headed                   # Show browser during tests
+      kosuke build --headless                 # Run tests in headless mode
+      kosuke build --verbose                  # Enable verbose test output
       kosuke build --tickets=custom.json      # Use custom tickets file
       kosuke build --directory=./my-project   # Run build in specific directory
       kosuke build --db-url=postgres://user:pass@host:5432/db  # Custom DB
@@ -349,32 +341,26 @@ COMMANDS:
       kosuke review                           # Review uncommitted changes
 
   test [--ticket=<ID> | --prompt="..."] [options]
-    Run E2E tests with automated fixing (either ticket or custom prompt)
-    Uses Playwright for testing, Claude AI for analyzing and fixing issues
-    Iteratively tests and fixes until passing or max retries reached
+    Run atomic browser tests with AI-powered automation (no fixing, no retries)
+    Uses Stagehand with Claude AI for intelligent browser interaction
+    For iterative test+fix workflow, use: kosuke ship --test
 
     Options:
       --ticket=<ID>         Ticket ID to test (from tickets.json, e.g., FRONTEND-1)
       --prompt="..."        Custom test prompt (alternative to --ticket)
       --url=<URL>           Base URL (default: http://localhost:3000)
-      --headed              Show browser during testing (visible GUI window for debugging)
-      --debug               Enable Playwright inspector
-      --update-baseline     Update visual regression baselines
-      --max-retries=<N>     Maximum fix-retest iterations (default: 3)
+      --headless            Run in headless mode (invisible browser)
+      --verbose             Enable verbose output
       --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --directory=<path>    Directory to run tests in (default: current directory)
       --dir=<path>          Alias for --directory
-      --pr                  Create pull request with fixes
-      --base-branch=<name>  Base branch for PR (default: current branch)
 
     Examples:
-      kosuke test --ticket=FRONTEND-1                    # Test with auto-fix
+      kosuke test --ticket=FRONTEND-1                    # Test ticket (atomic)
       kosuke test --prompt="Test user login flow"        # Test with custom prompt
       kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
-      kosuke test --prompt="..." --headed                # Show browser (visible GUI)
-      kosuke test --ticket=FRONTEND-1 --update-baseline  # Update visuals
-      kosuke test --ticket=FRONTEND-1 --max-retries=5    # More attempts
-      kosuke test --prompt="..." --pr                    # Create PR with fixes
+      kosuke test --prompt="..." --verbose               # Enable verbose output
+      kosuke test --ticket=FRONTEND-1 --headless         # Run in headless mode
       kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory
 
 GLOBAL OPTIONS:

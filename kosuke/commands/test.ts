@@ -13,14 +13,15 @@
  *   kosuke test --ticket=FRONTEND-1                    # Test with ticket
  *   kosuke test --prompt="Test user login flow"        # Test with custom prompt
  *   kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
- *   kosuke test --prompt="..." --headed                # Show browser (visible window)
+ *   kosuke test --prompt="..." --verbose               # Enable verbose output
+ *   kosuke test --prompt="..." --headless              # Run in headless mode (invisible)
  */
 
+import { Stagehand } from '@browserbasehq/stagehand';
 import { join } from 'path';
 import type { TestOptions, TestResult, Ticket } from '../types.js';
-import { runBrowserTest } from '../utils/browser-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { generateCustomTestPrompt, generateTestPrompt } from '../utils/prompt-generator.js';
+import { generateTestPrompt } from '../utils/prompt-generator.js';
 import { findTicket, loadTicketsFile } from '../utils/tickets-manager.js';
 
 /**
@@ -31,8 +32,8 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     ticket: ticketId,
     prompt: customPrompt,
     url = 'http://localhost:3000',
-    headed = false,
-    debug = false,
+    headless = false,
+    verbose = false,
     ticketsFile = 'tickets.json',
     directory,
   } = options;
@@ -52,6 +53,11 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
 
   if (ticketId && customPrompt) {
     throw new Error('Cannot provide both --ticket and --prompt. Please use one or the other.');
+  }
+
+  // Validate ANTHROPIC_API_KEY
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY environment variable is required');
   }
 
   let ticket: Ticket | undefined;
@@ -85,33 +91,78 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
       testPrompt = generateTestPrompt(ticket);
       console.log(`   ✅ Loaded: ${ticket.id} - ${ticket.title}\n`);
     } else {
-      // Use custom prompt
+      // Use custom prompt directly
       console.log('📋 Using custom prompt...');
       testIdentifier = `custom-${Date.now()}`;
-      testPrompt = generateCustomTestPrompt(customPrompt!, url);
-      console.log(`   ✅ Test prompt ready\n`);
+      testPrompt = customPrompt!;
+      console.log(`   ✅ Prompt: ${testPrompt}\n`);
     }
 
-    // 2. Run single browser test (NO retries)
+    // 2. Initialize Stagehand
     console.log(`${'='.repeat(60)}`);
     console.log(`🧪 Running Browser Test`);
     console.log(`${'='.repeat(60)}\n`);
 
-    const browserResult = await runBrowserTest({
-      url,
-      task: testPrompt,
-      headed,
-      debug,
+    console.log(`🌐 URL: ${url}`);
+    console.log(`🔍 Verbose: ${verbose ? 'enabled' : 'disabled'}`);
+    console.log(`👁️  Headless: ${headless ? 'enabled' : 'disabled'}\n`);
+
+    const stagehand = new Stagehand({
+      env: 'LOCAL',
+      verbose: verbose ? 2 : 1, // verbose flag → level 2, otherwise level 1
+      localBrowserLaunchOptions: {
+        headless,
+      },
     });
 
-    // 3. Return result immediately (no fixing, no retries)
+    await stagehand.init();
+    console.log('✅ Stagehand initialized\n');
+
+    // 3. Navigate to URL
+    const page = stagehand.context.pages()[0];
+    console.log(`🌐 Navigating to ${url}...`);
+    await page.goto(url);
+    console.log('✅ Navigation complete\n');
+
+    // 4. Create agent with system prompt
+    const agent = stagehand.agent({
+      systemPrompt: `You are a helpful testing assistant that can control a web browser.
+Execute the given instructions step by step.
+Be thorough and wait for elements to load when necessary.
+Do not ask follow-up questions, trust your judgement to complete the task.`,
+    });
+
+    // 5. Execute test instruction
+    console.log('🤖 Agent starting execution...\n');
+    const result = await agent.execute({
+      instruction: testPrompt,
+    });
+
+    // 6. Close browser
+    console.log('\n🔒 Closing browser session...');
+    await stagehand.close();
+    console.log('✅ Browser closed\n');
+
+    // 7. Calculate cost from token usage
+    const cost = result.usage ? calculateCost(result.usage) : 0;
+
+    // 8. Return TestResult
     return {
       ticketId: testIdentifier,
-      success: browserResult.success,
-      output: browserResult.output,
-      logs: browserResult.logs,
-      tokensUsed: browserResult.tokensUsed,
-      cost: browserResult.cost,
+      success: result.success,
+      output: result.message,
+      logs: {
+        console: [], // Stagehand doesn't expose browser console logs via agent
+        errors: result.success ? [] : [result.message],
+      },
+      tokensUsed: {
+        input: result.usage?.input_tokens || 0,
+        output: result.usage?.output_tokens || 0,
+        cacheCreation: 0, // Not exposed separately by Stagehand
+        cacheRead: result.usage?.cached_input_tokens || 0,
+      },
+      cost,
+      error: result.success ? undefined : result.message,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -138,6 +189,27 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
 }
 
 /**
+ * Calculate cost from Stagehand token usage
+ * Pricing (per million tokens):
+ * - Input: $3.00
+ * - Output: $15.00
+ * - Cache read: $0.30
+ */
+function calculateCost(usage: {
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens?: number;
+  cached_input_tokens?: number;
+  inference_time_ms: number;
+}): number {
+  const inputCost = (usage.input_tokens / 1_000_000) * 3.0;
+  const outputCost = (usage.output_tokens / 1_000_000) * 15.0;
+  const cacheReadCost = ((usage.cached_input_tokens || 0) / 1_000_000) * 0.3;
+
+  return inputCost + outputCost + cacheReadCost;
+}
+
+/**
  * Main test command
  */
 export async function testCommand(options: TestOptions): Promise<void> {
@@ -154,11 +226,6 @@ export async function testCommand(options: TestOptions): Promise<void> {
   const cleanupHandler = setupCancellationHandler(logContext);
 
   try {
-    // Validate environment
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY environment variable is required');
-    }
-
     // Run atomic test
     const result = await testCore(options);
 

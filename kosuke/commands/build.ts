@@ -13,7 +13,8 @@
  *   kosuke build --reset                   # Reset all tickets to "Todo" and process from scratch
  *   kosuke build --no-review               # Skip code review phase
  *   kosuke build --no-test                 # Skip testing phase for frontend tickets
- *   kosuke build --headed                  # Show browser during testing
+ *   kosuke build --headless                # Run tests in headless mode (invisible)
+ *   kosuke build --verbose                 # Enable verbose test output
  *   kosuke build --tickets=path/to/tickets.json
  *   kosuke build --db-url=postgres://user:pass@host:5432/db
  *
@@ -28,6 +29,7 @@ import { join, resolve } from 'path';
 import * as readline from 'readline';
 import simpleGit from 'simple-git';
 import type { BuildOptions, Ticket } from '../types.js';
+import { runTestsWithRetry } from '../utils/test-runner.js';
 import {
   loadTicketsFile,
   saveTicketsFile,
@@ -35,7 +37,6 @@ import {
   type TicketsFile,
 } from '../utils/tickets-manager.js';
 import { shipCore } from './ship.js';
-import { runTestsWithRetry } from '../utils/test-runner.js';
 
 /**
  * Prompt user for confirmation to continue
@@ -125,8 +126,8 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       review = true,
       test = true,
       url,
-      headed,
-      debug,
+      headless,
+      verbose,
       noLogs = false,
     } = options;
 
@@ -235,8 +236,8 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
             ticket,
             cwd,
             url,
-            headed,
-            debug,
+            headless,
+            verbose,
             maxRetries: 3,
           });
 

@@ -30,18 +30,3 @@ ${ticket.description}
 
 Return a clear success or failure status with details about what was tested and any issues found.`;
 }
-
-/**
- * Generate a test prompt from a custom string
- */
-export function generateCustomTestPrompt(customPrompt: string, url: string): string {
-  return `${customPrompt}
-
-**Testing Instructions:**
-1. Navigate to ${url}
-2. Execute the test scenario described above
-3. Check for console errors or warnings
-4. Verify expected behavior
-
-Return success if the test passes, or failure with details about what went wrong.`;
-}

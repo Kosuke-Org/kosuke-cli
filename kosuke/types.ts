@@ -94,11 +94,13 @@ export interface TicketsOptions {
 }
 
 export interface Ticket {
-  id: string; // e.g., "SCHEMA-1", "BACKEND-1", "FRONTEND-1"
+  id: string; // e.g., "SCHEMA-SCAFFOLD-1", "BACKEND-LOGIC-2", "FRONTEND-SCAFFOLD-1"
   title: string;
   description: string;
+  type: 'scaffold' | 'logic'; // scaffold = infrastructure setup, logic = business functionality
   estimatedEffort: number; // 1-10
   status: 'Todo' | 'InProgress' | 'Done' | 'Error';
+  category?: string; // e.g., "auth", "billing", "email", "user-management"
   error?: string; // Optional error message if status is 'Error'
 }
 
@@ -145,8 +147,8 @@ export interface BuildOptions {
   review?: boolean; // Enable code review phase (default: true)
   test?: boolean; // Enable testing phase for frontend tickets (default: true)
   url?: string; // Base URL for testing (default: http://localhost:3000)
-  headed?: boolean; // Show browser during testing
-  debug?: boolean; // Enable debug mode for tests
+  headless?: boolean; // Run browser in headless mode during testing
+  verbose?: boolean; // Enable verbose output for tests
   noLogs?: boolean;
 }
 
@@ -194,8 +196,8 @@ export interface TestOptions {
   ticket?: string; // Ticket ID to test (either ticket or prompt required)
   prompt?: string; // Custom test prompt (either ticket or prompt required)
   url?: string; // Base URL (default: http://localhost:3000)
-  headed?: boolean; // Show browser during testing (visible GUI window)
-  debug?: boolean; // Enable debug mode
+  headless?: boolean; // Run browser in headless mode (invisible)
+  verbose?: boolean; // Enable verbose output
   ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   directory?: string; // Directory to run tests in (default: cwd)
   noLogs?: boolean;
@@ -223,8 +225,8 @@ export interface TestRunnerOptions {
   ticket: Ticket;
   cwd: string;
   url?: string;
-  headed?: boolean;
-  debug?: boolean;
+  headless?: boolean;
+  verbose?: boolean;
   maxRetries?: number;
 }
 

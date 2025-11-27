@@ -17,7 +17,7 @@ import { analyzeAndFix } from './error-analyzer.js';
  * @returns Result with success status, attempts, fixes applied, and costs
  */
 export async function runTestsWithRetry(options: TestRunnerOptions): Promise<TestRunnerResult> {
-  const { ticket, cwd, url, headed, debug, maxRetries = 3 } = options;
+  const { ticket, cwd, url, headless, verbose, maxRetries = 3 } = options;
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -37,8 +37,8 @@ export async function runTestsWithRetry(options: TestRunnerOptions): Promise<Tes
       const testResult = await testCore({
         ticket: ticket.id,
         url,
-        headed,
-        debug,
+        headless,
+        verbose,
         directory: cwd,
       });
 

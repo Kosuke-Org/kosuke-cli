@@ -60,7 +60,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
     "@anthropic-ai/sdk": "^0.32.1",
-    "@browserbasehq/stagehand": "^1.5.0",
+    "@browserbasehq/stagehand": "^3.0.5",
     "@octokit/rest": "^20.0.0",
     "dotenv": "^16.4.0",
     "glob": "^10.3.0",
