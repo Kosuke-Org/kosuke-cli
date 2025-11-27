@@ -90,14 +90,23 @@ export interface TicketsOptions {
   path?: string; // Path to requirements document (default: docs.md)
   output?: string; // Output file (default: tickets.json)
   directory?: string; // Directory for Claude to explore (default: cwd)
+  scaffold?: boolean; // Enable scaffold mode (infrastructure setup)
+  prompt?: string; // Inline requirements (alternative to --path)
   noLogs?: boolean;
 }
 
+export interface LayerAnalysis {
+  needsSchema: boolean;
+  needsBackend: boolean;
+  needsFrontend: boolean;
+  reasoning: string;
+}
+
 export interface Ticket {
-  id: string; // e.g., "SCHEMA-SCAFFOLD-1", "BACKEND-LOGIC-2", "FRONTEND-SCAFFOLD-1"
+  id: string; // e.g., "SCHEMA-SCAFFOLD-1", "BACKEND-LOGIC-2", "WEB-TEST-1", "DB-TEST-1"
   title: string;
   description: string;
-  type: 'scaffold' | 'logic'; // scaffold = infrastructure setup, logic = business functionality
+  type: 'scaffold' | 'logic' | 'web-test' | 'db-test'; // scaffold = infrastructure setup, logic = business functionality, web-test = E2E browser tests, db-test = database validation
   estimatedEffort: number; // 1-10
   status: 'Todo' | 'InProgress' | 'Done' | 'Error';
   category?: string; // e.g., "auth", "billing", "email", "user-management"
@@ -108,6 +117,7 @@ export interface TicketsResult {
   schemaTickets: Ticket[];
   backendTickets: Ticket[];
   frontendTickets: Ticket[];
+  testTickets: Ticket[]; // DB and Web test tickets
   totalTickets: number;
   projectPath: string; // Directory where tickets were generated
   tokensUsed: {
@@ -164,6 +174,12 @@ export interface ReviewOptions {
   noLogs?: boolean;
 }
 
+export interface TestContext {
+  ticketId: string;
+  ticketTitle: string;
+  ticketDescription: string;
+}
+
 export interface ShipResult {
   success: boolean;
   implementationFixCount: number;
@@ -193,18 +209,20 @@ export interface ReviewResult {
 }
 
 export interface TestOptions {
-  ticket?: string; // Ticket ID to test (either ticket or prompt required)
-  prompt?: string; // Custom test prompt (either ticket or prompt required)
-  url?: string; // Base URL (default: http://localhost:3000)
-  headless?: boolean; // Run browser in headless mode (invisible)
+  prompt: string; // Test prompt/instructions (required)
+  type?: 'web-test' | 'db-test'; // Manual test type selection (auto-detected from context if not specified)
+  context?: TestContext; // Optional ticket context for test execution
+  url?: string; // Base URL for web tests (default: http://localhost:3000)
+  dbUrl?: string; // Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
+  headless?: boolean; // Run browser in headless mode (invisible, web-test only)
   verbose?: boolean; // Enable verbose output
-  ticketsFile?: string; // Path to tickets.json (default: tickets.json, relative to directory)
   directory?: string; // Directory to run tests in (default: cwd)
   noLogs?: boolean;
 }
 
 export interface TestResult {
   ticketId: string;
+  testType: 'web-test' | 'db-test';
   success: boolean;
   output: string; // Human-readable test result
   logs: {
@@ -219,6 +237,12 @@ export interface TestResult {
   };
   cost: number;
   error?: string;
+}
+
+export interface DBTestResult {
+  success: boolean;
+  tablesValidated: string[];
+  errors: string[];
 }
 
 export interface TestRunnerOptions {

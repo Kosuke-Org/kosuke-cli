@@ -29,7 +29,7 @@ import { join, resolve } from 'path';
 import * as readline from 'readline';
 import simpleGit from 'simple-git';
 import type { BuildOptions, Ticket } from '../types.js';
-import { runTestsWithRetry } from '../utils/test-runner.js';
+import { generateDBTestPrompt, generateWebTestPrompt } from '../utils/prompt-generator.js';
 import {
   loadTicketsFile,
   saveTicketsFile,
@@ -37,6 +37,7 @@ import {
   type TicketsFile,
 } from '../utils/tickets-manager.js';
 import { shipCore } from './ship.js';
+import { testCore } from './test.js';
 
 /**
  * Prompt user for confirmation to continue
@@ -63,21 +64,23 @@ function getTicketsToProcess(ticketsData: TicketsFile): Ticket[] {
   // Get all Todo and Error tickets (automatic retry on Error)
   const tickets = ticketsData.tickets.filter((t) => t.status === 'Todo' || t.status === 'Error');
 
-  // Sort by phase: SCHEMA -> BACKEND -> FRONTEND
+  // Sort by phase: SCHEMA -> DB-TEST -> BACKEND -> FRONTEND -> WEB-TEST
   tickets.sort((a, b) => {
     const getPhaseOrder = (id: string): number => {
       if (id.startsWith('SCHEMA-')) return 1;
-      if (id.startsWith('BACKEND-')) return 2;
-      if (id.startsWith('FRONTEND-')) return 3;
-      return 4;
+      if (id.startsWith('DB-TEST-')) return 2;
+      if (id.startsWith('BACKEND-')) return 3;
+      if (id.startsWith('FRONTEND-')) return 4;
+      if (id.startsWith('WEB-TEST-')) return 5;
+      return 6;
     };
 
     const phaseComparison = getPhaseOrder(a.id) - getPhaseOrder(b.id);
     if (phaseComparison !== 0) return phaseComparison;
 
     // Within same phase, sort by ticket number
-    const aNum = parseInt(a.id.split('-')[1] || '0', 10);
-    const bNum = parseInt(b.id.split('-')[1] || '0', 10);
+    const aNum = parseInt(a.id.split('-').slice(-1)[0] || '0', 10);
+    const bNum = parseInt(b.id.split('-').slice(-1)[0] || '0', 10);
     return aNum - bNum;
   });
 
@@ -85,19 +88,42 @@ function getTicketsToProcess(ticketsData: TicketsFile): Ticket[] {
 }
 
 /**
- * Commit ticket changes to current branch
+ * Commit batch of tickets to current branch
  */
-async function commitTicket(ticket: Ticket, cwd: string): Promise<void> {
+async function commitBatch(batchTickets: Ticket[], cwd: string): Promise<void> {
   const git = simpleGit(cwd);
 
   // Stage all changes
   await git.add('.');
 
-  // Commit with ticket info
-  const commitMessage = `feat: ${ticket.id} - ${ticket.title}`;
+  // Create commit message with all tickets in batch
+  const ticketIds = batchTickets.map((t) => t.id).join(', ');
+  const batchType = batchTickets[0].id.startsWith('WEB-TEST-')
+    ? batchTickets[0].id.split('-')[2] === '1'
+      ? 'scaffold'
+      : 'logic'
+    : 'implementation';
+
+  const commitMessage = `feat: ${batchType} batch (${ticketIds})`;
   await git.commit(commitMessage);
 
-  console.log(`   ✅ Committed: ${commitMessage}`);
+  console.log(`\n   ✅ Committed batch: ${commitMessage}\n`);
+}
+
+/**
+ * Determine if we should commit after this ticket
+ * Commits happen after the last WEB-TEST in a batch
+ */
+function shouldCommitAfterTicket(currentTicket: Ticket, nextTicket: Ticket | undefined): boolean {
+  // Always commit after last ticket
+  if (!nextTicket) return true;
+
+  // Commit if current is WEB-TEST and next is not WEB-TEST (batch boundary)
+  if (currentTicket.id.startsWith('WEB-TEST-') && !nextTicket.id.startsWith('WEB-TEST-')) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -124,7 +150,6 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       askConfirm = false,
       askCommit = false,
       review = true,
-      test = true,
       url,
       headless,
       verbose,
@@ -188,9 +213,12 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
     });
     console.log('');
 
-    // 4. Process each ticket sequentially
+    // 4. Process each ticket sequentially with batch tracking
+    const batchTickets: Ticket[] = []; // Track tickets in current batch
+
     for (let i = 0; i < ticketsToProcess.length; i++) {
       const ticket = ticketsToProcess[i];
+      const nextTicket = ticketsToProcess[i + 1];
 
       console.log('\n' + '='.repeat(80));
       console.log(`📦 Processing Ticket ${i + 1}/${ticketsToProcess.length}: ${ticket.id}`);
@@ -203,68 +231,153 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
         updateTicketStatus(ticketsPath, ticket.id, 'InProgress');
         console.log('   ✅ Status updated\n');
 
-        // Step 2: Ship implements the ticket (no ticket lifecycle management)
-        const shipResult = await shipCore({
-          ticketData: ticket, // Pass ticket object directly
-          review, // Controlled by build options
-          directory: cwd,
-          dbUrl,
-          noLogs,
-        });
+        // Step 2: Process ticket based on type
+        const isTestTicket = ticket.type === 'db-test' || ticket.type === 'web-test';
 
-        if (!shipResult.success) {
-          throw new Error(shipResult.error || 'Ship failed');
-        }
-
-        console.log(`\n✅ ${ticket.id} implemented successfully`);
-        console.log(`📊 Implementation fixes: ${shipResult.implementationFixCount}`);
-        console.log(`🔧 Linting fixes: ${shipResult.lintFixCount}`);
-        if (shipResult.reviewFixCount > 0) {
-          console.log(`🔍 Review fixes: ${shipResult.reviewFixCount}`);
-        }
-        console.log(`💰 Ship cost: $${shipResult.cost.toFixed(4)}`);
-
-        // Step 3: Run tests if frontend ticket and test enabled
-        const isFrontendTicket = ticket.id.startsWith('FRONTEND-');
-
-        if (test && isFrontendTicket) {
+        if (isTestTicket) {
+          // This is a test ticket - run test with retry
           console.log(`\n${'='.repeat(60)}`);
-          console.log(`🧪 Phase: Testing (Iterative)`);
+          console.log(`🧪 Running ${ticket.type === 'db-test' ? 'Database' : 'Web'} Test`);
           console.log(`${'='.repeat(60)}\n`);
 
-          const testResult = await runTestsWithRetry({
-            ticket,
-            cwd,
+          // Generate test prompt from ticket
+          const testPrompt =
+            ticket.type === 'db-test'
+              ? generateDBTestPrompt(ticket)
+              : generateWebTestPrompt(ticket);
+
+          let testResult = await testCore({
+            prompt: testPrompt,
+            type: ticket.type === 'db-test' ? 'db-test' : 'web-test',
+            context: {
+              ticketId: ticket.id,
+              ticketTitle: ticket.title,
+              ticketDescription: ticket.description,
+            },
+            directory: cwd,
             url,
+            dbUrl,
             headless,
             verbose,
-            maxRetries: 3,
+            noLogs,
           });
 
-          console.log(
-            `\n✨ Testing completed (${testResult.fixesApplied} fixes applied over ${testResult.attempts} iterations)`
-          );
-          console.log(`💰 Testing cost: $${testResult.cost.toFixed(4)}`);
+          let retryCount = 0;
+          const maxRetries = 3;
+
+          // Retry loop: if test fails, run ship to fix it
+          while (!testResult.success && retryCount < maxRetries) {
+            retryCount++;
+            console.log(`\n⚠️  Test failed (attempt ${retryCount}/${maxRetries})`);
+            console.log(`📝 Error: ${testResult.error}\n`);
+
+            console.log(`🔧 Running ship to fix test failures...\n`);
+
+            // Create a fix ticket for ship
+            const fixTicket: Ticket = {
+              id: `${ticket.id}-FIX-${retryCount}`,
+              title: `Fix ${ticket.id} test failures`,
+              description: `Fix the following test failures:\n\n${testResult.error}\n\nOriginal ticket:\n${ticket.description}`,
+              type: 'logic', // Use logic type for fix tickets
+              estimatedEffort: 5,
+              status: 'InProgress',
+              category: ticket.category,
+            };
+
+            const shipResult = await shipCore({
+              ticketData: fixTicket,
+              review: false, // Skip review for test fixes
+              directory: cwd,
+              dbUrl,
+              noLogs,
+            });
+
+            if (!shipResult.success) {
+              console.error(`\n❌ Fix attempt ${retryCount} failed: ${shipResult.error}`);
+              continue;
+            }
+
+            console.log(`\n✅ Fix applied (attempt ${retryCount})`);
+            console.log(`💰 Fix cost: $${shipResult.cost.toFixed(4)}\n`);
+
+            // Re-run test
+            console.log(`🔄 Re-running test...\n`);
+            testResult = await testCore({
+              prompt: testPrompt,
+              type: ticket.type === 'db-test' ? 'db-test' : 'web-test',
+              context: {
+                ticketId: ticket.id,
+                ticketTitle: ticket.title,
+                ticketDescription: ticket.description,
+              },
+              directory: cwd,
+              url,
+              dbUrl,
+              headless,
+              verbose,
+              noLogs,
+            });
+          }
+
+          if (!testResult.success) {
+            throw new Error(`Test failed after ${maxRetries} fix attempts:\n${testResult.error}`);
+          }
+
+          console.log(`\n✅ ${ticket.id} test passed`);
+          console.log(`💰 Test cost: $${testResult.cost.toFixed(4)}`);
+        } else {
+          // Regular implementation ticket - run ship
+          const shipResult = await shipCore({
+            ticketData: ticket,
+            review,
+            directory: cwd,
+            dbUrl,
+            noLogs,
+          });
+
+          if (!shipResult.success) {
+            throw new Error(shipResult.error || 'Ship failed');
+          }
+
+          console.log(`\n✅ ${ticket.id} implemented successfully`);
+          console.log(`📊 Implementation fixes: ${shipResult.implementationFixCount}`);
+          console.log(`🔧 Linting fixes: ${shipResult.lintFixCount}`);
+          if (shipResult.reviewFixCount > 0) {
+            console.log(`🔍 Review fixes: ${shipResult.reviewFixCount}`);
+          }
+          console.log(`💰 Ship cost: $${shipResult.cost.toFixed(4)}`);
         }
 
-        // Step 4: Update ticket status to Done
+        // Step 3: Update ticket status to Done
         console.log('\n📝 Updating ticket status to Done...');
         updateTicketStatus(ticketsPath, ticket.id, 'Done');
         console.log(`   ✅ Ticket ${ticket.id} marked as Done\n`);
 
-        // Step 5: Commit (if not asking)
-        if (askCommit) {
-          // Interactive: ask before committing
-          const shouldCommit = await promptConfirmation(`\n❓ Commit changes for ${ticket.id}?`);
+        // Add to batch tracking
+        batchTickets.push(ticket);
 
-          if (shouldCommit) {
-            await commitTicket(ticket, cwd);
+        // Step 4: Commit batch if at batch boundary
+        const shouldCommit = shouldCommitAfterTicket(ticket, nextTicket);
+
+        if (shouldCommit && batchTickets.length > 0) {
+          if (askCommit) {
+            // Interactive: ask before committing
+            const commitConfirmed = await promptConfirmation(
+              `\n❓ Commit batch of ${batchTickets.length} ticket(s)?`
+            );
+
+            if (commitConfirmed) {
+              await commitBatch(batchTickets, cwd);
+            } else {
+              console.log('   ⏭️  Skipped batch commit\n');
+            }
           } else {
-            console.log('   ⏭️  Skipped commit\n');
+            // Default: auto-commit batch
+            await commitBatch(batchTickets, cwd);
           }
-        } else {
-          // Default: auto-commit
-          await commitTicket(ticket, cwd);
+
+          // Reset batch tracking
+          batchTickets.length = 0;
         }
 
         // Ask for confirmation before proceeding to next ticket (if not last ticket)

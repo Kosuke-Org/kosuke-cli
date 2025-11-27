@@ -22,11 +22,12 @@
 │  │  ship   │                          │  build  │                       │
 │  └────┬────┘                          └────┬────┘                       │
 │       │                                    │                            │
-│       ├─► review (conditional)             ├─► ship (loop)              │
-│       ├─► test (conditional)               │   ├─► review (always)      │
-│       └─► lint (always)                    │   ├─► test (frontend only) │
-│                                            │   ├─► lint (always)        │
-│                                            │   └─► commit (per ticket)  │
+│       ├─► review (conditional)             ├─► ship (for impl tickets)  │
+│       └─► lint (always)                    │   ├─► review (conditional) │
+│                                            │   └─► lint (always)        │
+│                                            ├─► test (for test tickets)  │
+│                                            │   └─► ship (if test fails) │
+│                                            └─► commit (per batch)       │
 │                                                                          │
 │  ┌─────────┐                                                            │
 │  │ review  │                                                            │
@@ -50,52 +51,53 @@
 
 ## Command Details Table
 
-| Command          | Dependencies                            | Called By           | Core/Wrapper | Description                                     |
-| ---------------- | --------------------------------------- | ------------------- | ------------ | ----------------------------------------------- |
-| **analyse**      | -                                       | -                   | Core         | Analyze code quality issues                     |
-| **getcode**      | repository-manager, repository-resolver | -                   | Core         | Explore GitHub repositories                     |
-| **sync-rules**   | -                                       | -                   | Core         | Sync CLAUDE.md rules from template              |
-| **requirements** | -                                       | -                   | Core         | Interactive requirements gathering              |
-| **tickets**      | -                                       | -                   | Core         | Generate tickets from requirements              |
-| **lint**         | validator.ts                            | review, ship, build | Core         | Fix linting errors with Claude                  |
-| **review**       | reviewCore, lint                        | ship (conditional)  | Wrapper      | Review git diff against CLAUDE.md               |
-| **test**         | testCore, log-collector, browser-agent  | ship (conditional)  | Core         | E2E testing with automated fixing               |
-| **ship**         | reviewCore, testCore, lint              | build               | Orchestrator | Implement a single ticket (no commit)           |
-| **build**        | ship, git commit                        | -                   | Orchestrator | Build entire project from tickets, commits each |
+| Command          | Dependencies                            | Called By           | Core/Wrapper | Description                               |
+| ---------------- | --------------------------------------- | ------------------- | ------------ | ----------------------------------------- |
+| **analyse**      | -                                       | -                   | Core         | Analyze code quality issues               |
+| **getcode**      | repository-manager, repository-resolver | -                   | Core         | Explore GitHub repositories               |
+| **sync-rules**   | -                                       | -                   | Core         | Sync CLAUDE.md rules from template        |
+| **requirements** | -                                       | -                   | Core         | Interactive requirements gathering        |
+| **tickets**      | -                                       | -                   | Core         | Generate tickets with test coverage       |
+| **lint**         | validator.ts                            | review, ship, build | Core         | Fix linting errors with Claude            |
+| **review**       | reviewCore, lint                        | ship (conditional)  | Wrapper      | Review git diff against CLAUDE.md         |
+| **test**         | testCore, Stagehand, postgres           | build               | Core         | Web E2E & DB schema testing (atomic)      |
+| **ship**         | reviewCore, lint                        | build               | Orchestrator | Implement a single ticket (no commit)     |
+| **build**        | ship, test, git commit                  | -                   | Orchestrator | Build project from tickets, batch commits |
 
 ## Utility Dependencies
 
-| Utility                    | Used By                   | Purpose                            |
-| -------------------------- | ------------------------- | ---------------------------------- |
-| **claude-agent.ts**        | All commands              | Centralized Claude SDK integration |
-| **validator.ts**           | lint, review, ship, build | Comprehensive linting              |
-| **git.ts**                 | review, build             | Git operations                     |
-| **github.ts**              | sync-rules, build         | GitHub API integration             |
-| **repository-manager.ts**  | getcode                   | Clone/update repos                 |
-| **repository-resolver.ts** | getcode                   | Infer repo from queries            |
-| **tickets-manager.ts**     | ship, build, test         | Load/update tickets.json           |
-| **error-analyzer.ts**      | ship, test                | Analyze test/runtime failures      |
-| **log-collector.ts**       | ship, test                | Collect Docker/test logs           |
-| **browser-agent.ts**       | test                      | Playwright browser automation      |
-| **pr-orchestrator.ts**     | ship, build, test         | Create PRs                         |
-| **prompt-generator.ts**    | ship, test                | Generate prompts for Claude        |
-| **batch-creator.ts**       | analyse                   | Create file batches for processing |
-| **file-discovery.ts**      | analyse, lint             | File scanning with .kosukeignore   |
-| **logger.ts**              | All commands              | Execution logging to Kosuke API    |
+| Utility                    | Used By                   | Purpose                               |
+| -------------------------- | ------------------------- | ------------------------------------- |
+| **claude-agent.ts**        | All commands              | Centralized Claude SDK integration    |
+| **validator.ts**           | lint, review, ship, build | Comprehensive linting                 |
+| **git.ts**                 | review, build             | Git operations                        |
+| **github.ts**              | sync-rules, build         | GitHub API integration                |
+| **repository-manager.ts**  | getcode                   | Clone/update repos                    |
+| **repository-resolver.ts** | getcode                   | Infer repo from queries               |
+| **tickets-manager.ts**     | ship, build, test         | Load/update tickets.json              |
+| **error-analyzer.ts**      | test                      | Analyze test/runtime failures         |
+| **log-collector.ts**       | test                      | Collect Docker/test logs              |
+| **pr-orchestrator.ts**     | sync-rules, analyse, lint | Create PRs                            |
+| **prompt-generator.ts**    | test                      | Generate web-test and db-test prompts |
+| **test-runner.ts**         | build                     | Iterative test+fix loop               |
+| **batch-creator.ts**       | analyse                   | Create file batches for processing    |
+| **file-discovery.ts**      | analyse, lint             | File scanning with .kosukeignore      |
+| **logger.ts**              | All commands              | Execution logging to Kosuke API       |
 
 ## Call Graph (Nested)
 
 ```text
 build
-├── ship (loop for each ticket)
-│   ├── reviewCore (ALWAYS runs, WITH ticket context)
-│   ├── testCore (conditional, auto-runs for frontend tickets)
-│   └── lint
-└── git commit (per ticket, auto or ask with --ask-commit)
+├── ship (for implementation tickets: schema, backend, frontend)
+│   ├── reviewCore (conditional via build --review flag)
+│   └── lint (always)
+├── test (for test tickets: db-test, web-test)
+│   ├── Stagehand (web-test) or postgres (db-test)
+│   └── ship (if test fails, retry up to 3 times)
+└── git commit (per batch: after web-test completion)
 
 ship
 ├── reviewCore (conditional via --review flag, WITH ticket context)
-├── testCore (conditional via --test flag)
 └── lint (always)
 (Note: Ship does NOT commit - commits only through build command)
 
@@ -107,17 +109,36 @@ lint
 └── validator.ts
 
 test
-├── browser-agent.ts (Playwright automation)
-├── error-analyzer.ts (analyze failures)
-├── log-collector.ts (collect logs)
-└── claude-agent.ts (fix issues)
+├── web-test (auto-detected from ticket ID or --type flag)
+│   ├── Stagehand (browser automation)
+│   └── claude-agent.ts (AI-driven testing)
+└── db-test (auto-detected from ticket ID or --type flag)
+    └── postgres (query information_schema for validation)
 
 requirements
 └── Anthropic SDK directly (custom tools for docs.md)
 
-tickets
-├── claude-agent.ts (generate scaffold tickets: schema, backend, frontend)
-└── claude-agent.ts (generate logic tickets: schema, backend, frontend)
+tickets (two modes)
+├── SCAFFOLD MODE (--scaffold flag):
+│   ├── Scaffold batch:
+│   │   ├── claude-agent.ts (schema scaffold)
+│   │   ├── claude-agent.ts (db-test 1)
+│   │   ├── claude-agent.ts (backend scaffold)
+│   │   ├── claude-agent.ts (frontend scaffold)
+│   │   └── claude-agent.ts (web-tests 1..N)
+│   └── Logic batch:
+│       ├── claude-agent.ts (schema logic)
+│       ├── claude-agent.ts (db-test 2)
+│       ├── claude-agent.ts (backend logic)
+│       ├── claude-agent.ts (frontend logic)
+│       └── claude-agent.ts (web-tests N+1..M)
+└── LOGIC-ONLY MODE (default):
+    ├── claude-agent.ts (layer analysis: schema/backend/frontend)
+    ├── claude-agent.ts (schema logic, if needed)
+    ├── claude-agent.ts (db-test, if schema)
+    ├── claude-agent.ts (backend logic, if needed)
+    ├── claude-agent.ts (frontend logic, if needed)
+    └── claude-agent.ts (web-tests, if implementation)
 ```
 
 ## External Dependencies
@@ -140,23 +161,39 @@ tickets
 ### Development Workflow (Full Cycle)
 
 ```text
+NEW PROJECT (with Kosuke Template):
+
 1. requirements          → Interactive requirements gathering
    └─► Creates: docs.md
 
-2. tickets               → Generate structured tickets from requirements
-   └─► Creates: tickets.json (6 phases: Scaffold + Logic for Schema/Backend/Frontend)
-       Claude analyzes requirements vs template baseline during ticket generation
+2. tickets --scaffold    → Generate scaffold + logic tickets
+   └─► Creates: tickets.json
+       Scaffold batch: schema → db-test → backend → frontend → web-tests
+       Logic batch:    schema → db-test → backend → frontend → web-tests
+       Claude analyzes requirements vs Kosuke Template baseline
 
 3. build                 → Batch process all tickets
-   ├─► For each ticket:
+   ├─► For each implementation ticket (schema, backend, frontend):
    │   ├─► ship --ticket=ID (implements)
-   │   ├─► review (always, with ticket context)
-   │   ├─► lint (always)
-   │   ├─► test (auto for frontend tickets)
-   │   └─► git commit (auto, or ask with --ask-commit)
-   └─► Creates: Fully implemented feature with commits
+   │   ├─► review (conditional via --review flag)
+   │   └─► lint (always)
+   ├─► For each test ticket (db-test, web-test):
+   │   ├─► test --ticket=ID (runs test)
+   │   └─► ship (if test fails, retry up to 3 times)
+   └─► git commit (per batch: after web-test completion)
+       Creates: Fully implemented feature with test coverage and batch commits
 
-Alternative: ship --ticket=ID [--review] [--test]  → Implement individual tickets manually (no commits)
+EXISTING PROJECT (add features):
+
+1. tickets --prompt="Add dark mode toggle"  → Smart layer detection
+   └─► Creates: tickets.json
+       Analyzes requirements to determine needed layers (schema/backend/frontend)
+       Generates only required tickets (e.g., frontend-only for UI changes)
+       Claude infers tech stack from codebase exploration
+
+2. build                 → Same as above (batch process tickets)
+
+Alternative: ship --ticket=ID [--review]  → Implement individual tickets manually (no commits)
 ```
 
 ### Maintenance Workflow
@@ -199,15 +236,36 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 #### tickets
 
 - `--path=FILE` - Path to requirements document (default: docs.md)
+- `--prompt="..."` - Inline requirements (alternative to --path)
+- `--scaffold` - Enable scaffold mode for new projects (default: logic-only mode)
 - `--directory=PATH` - Directory for Claude to explore (default: cwd)
 - `--output=FILE` - Output file for tickets (default: tickets.json)
+
+**Logic-Only Mode (default):**
+
+- Analyzes requirements to determine which layers (schema/backend/frontend) are needed
+- Generates only required tickets (e.g., frontend-only for UI changes)
+- Infers tech stack from codebase exploration
+- Best for existing projects and adding features
+
+**Scaffold Mode (--scaffold):**
+
+- Generates scaffold batch (infrastructure setup) + logic batch (business logic)
+- Analyzes requirements against Kosuke Template baseline
+- Full 10-phase ticket generation with test coverage
+- Best for new projects based on Kosuke Template
+
+Examples:
+
+- `kosuke tickets --prompt="Add dark mode toggle"` - Generate tickets for feature (logic-only)
+- `kosuke tickets --scaffold --path=docs.md` - Generate tickets for new project (scaffold mode)
+- `kosuke tickets --path=feature.md` - Generate tickets from file (logic-only)
 
 #### ship
 
 - `--ticket=ID` - Ticket ID to implement (required)
 - `--review` - Review git diff with ticket context
-- `--test` - Run E2E tests
-- `--db-url=URL` - Database URL for migrations
+- `--db-url=URL` - Database URL for migrations (default: postgres://postgres:postgres@localhost:5432/postgres)
 
 Note: Ship implements tickets but does NOT commit. Use build command for commits.
 
@@ -215,21 +273,27 @@ Note: Ship implements tickets but does NOT commit. Use build command for commits
 
 - `--reset` - Reset all tickets to "Todo" before processing
 - `--ask-confirm` - Ask for confirmation before each ticket
-- `--ask-commit` - Ask before committing each ticket (default: auto-commit)
-- `--db-url=URL` - Database URL for migrations
+- `--ask-commit` - Ask before committing each batch (default: auto-commit)
+- `--review` - Enable code review for implementation tickets (default: true)
+- `--url=URL` - Base URL for web tests (default: http://localhost:3000)
+- `--db-url=URL` - Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
+- `--headless` - Run browser in headless mode for web tests
+- `--verbose` - Enable verbose output for tests
 
-Note: Build always enables `--review` for quality assurance on all tickets.
-Build commits each ticket individually to current branch (auto or interactive with --ask-commit).
+Note: Build processes tickets in order (schema → db-test → backend → frontend → web-test).
+Commits in batches after web-test completion. Test tickets auto-retry with fixes (max 3 attempts).
 
 #### test
 
-- `--ticket=ID` - Test ticket from tickets.json
+- `--ticket=ID` - Test ticket from tickets.json (WEB-TEST-X or DB-TEST-X)
 - `--prompt="..."` - Custom test prompt (alternative to --ticket)
-- `--url=URL` - Base URL (default: <http://localhost:3000>)
-- `--headed` - Show browser window
-- `--debug` - Enable Playwright inspector
-- `--update-baseline` - Update visual baselines
-- `--max-retries=N` - Max fix attempts (default: 3)
+- `--type=TYPE` - Manual test type: web-test or db-test (auto-detected from ticket)
+- `--url=URL` - Base URL for web tests (default: http://localhost:3000)
+- `--db-url=URL` - Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
+- `--headless` - Run browser in headless mode (web-test only)
+- `--verbose` - Enable verbose output
+
+Note: Atomic testing (no fixes, no retries). For test+fix workflow, use build command.
 
 #### analyse
 

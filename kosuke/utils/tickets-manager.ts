@@ -44,7 +44,7 @@ export function saveTicketsFile(ticketsPath: string, ticketsData: TicketsFile): 
 /**
  * Find ticket by ID
  */
-export function findTicket(ticketsData: TicketsFile, ticketId: string): Ticket | undefined {
+function findTicket(ticketsData: TicketsFile, ticketId: string): Ticket | undefined {
   return ticketsData.tickets.find((t) => t.id === ticketId);
 }
 

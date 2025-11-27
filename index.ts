@@ -12,7 +12,7 @@
  *   tickets                 Generate implementation tickets from requirements
  *   build                   Batch process all tickets from tickets.json
  *   review                  Review codebase against CLAUDE.md rules
- *   test                    Run E2E tests with automated fixing (ticket or custom prompt)
+ *   test                    Run atomic tests (web E2E or database validation)
  *
  * Usage:
  *   bun run kosuke sync-rules
@@ -23,7 +23,7 @@
  *   bun run kosuke tickets
  *   bun run kosuke build
  *   bun run kosuke review
- *   bun run kosuke test --ticket=FRONTEND-1 OR --prompt="Test login flow"
+ *   bun run kosuke test --prompt="Test user login flow" --type=web-test
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -107,6 +107,8 @@ async function main() {
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
+          scaffold: args.includes('--scaffold'),
+          prompt: args.find((arg) => arg.startsWith('--prompt='))?.split('=')[1],
           noLogs: args.includes('--no-logs'),
         };
         await ticketsCommand(options);
@@ -143,41 +145,47 @@ async function main() {
       }
 
       case 'test': {
-        const ticketArg = args.find((arg) => arg.startsWith('--ticket='))?.split('=')[1];
         const promptArg = args.find((arg) => arg.startsWith('--prompt='))?.split('=')[1];
 
-        if (!ticketArg && !promptArg) {
-          console.error('❌ Either --ticket or --prompt flag is required\n');
-          console.log(
-            'Usage: kosuke test --ticket=FRONTEND-1 [OPTIONS]  OR  kosuke test --prompt="..." [OPTIONS]'
-          );
+        if (!promptArg) {
+          console.error('❌ The --prompt flag is required\n');
+          console.log('Usage: kosuke test --prompt="..." [OPTIONS]');
           console.log('\nOptions:');
-          console.log('  --ticket=ID         Test a specific ticket from tickets.json');
-          console.log('  --prompt="..."      Test with a custom prompt');
-          console.log('  --url=URL           Base URL (default: http://localhost:3000)');
-          console.log('  --headless          Run in headless mode (invisible browser)');
-          console.log('  --verbose           Enable verbose output');
-          console.log('  --directory=PATH    Directory to test (default: cwd)');
+          console.log('  --prompt="..."       Test instructions (required)');
+          console.log(
+            '  --type=TYPE          Test type: web-test or db-test (auto-detected if not specified)'
+          );
+          console.log(
+            '  --url=URL            Base URL for web tests (default: http://localhost:3000)'
+          );
+          console.log('  --db-url=URL         Database URL for db tests (default: postgres://...)');
+          console.log(
+            '  --headless           Run in headless mode (invisible browser, web-test only)'
+          );
+          console.log('  --verbose            Enable verbose output');
+          console.log('  --directory=PATH     Directory to test (default: cwd)');
           console.log('\nExamples:');
-          console.log('  kosuke test --ticket=FRONTEND-1                    # Test ticket');
-          console.log('  kosuke test --prompt="Test login flow"             # Test with prompt');
-          console.log('  kosuke test --ticket=FRONTEND-1 --verbose          # Verbose output');
-          console.log('  kosuke test --prompt="..." --headless              # Headless mode');
+          console.log('  kosuke test --prompt="Test user login flow" --type=web-test');
+          console.log('  kosuke test --prompt="Validate users table exists" --type=db-test');
+          console.log('  kosuke test --prompt="..." --verbose --headless');
+          console.log('\nNote: This command is mainly used programmatically from kosuke build.');
+          console.log('      For ticket-based testing with retries, use: kosuke build');
           process.exit(1);
         }
 
-        if (ticketArg && promptArg) {
-          console.error('❌ Cannot provide both --ticket and --prompt. Use one or the other.\n');
+        const typeArg = args.find((arg) => arg.startsWith('--type='))?.split('=')[1];
+        if (typeArg && typeArg !== 'web-test' && typeArg !== 'db-test') {
+          console.error('❌ Invalid test type. Use: web-test or db-test\n');
           process.exit(1);
         }
 
         const options = {
-          ticket: ticketArg,
           prompt: promptArg,
+          type: typeArg as 'web-test' | 'db-test' | undefined,
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
+          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
           headless: args.includes('--headless'),
           verbose: args.includes('--verbose'),
-          ticketsFile: args.find((arg) => arg.startsWith('--tickets='))?.split('=')[1],
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
@@ -274,29 +282,61 @@ COMMANDS:
       kosuke getcode -t "Show me pagination examples"
 
   tickets [options]
-    Generate implementation tickets from requirements document
-    Analyzes requirements and creates structured tickets in three phases:
-    1. Schema tickets (database design)
-    2. Backend tickets (API, services, business logic)
-    3. Frontend tickets (pages, components, UI)
+    Generate implementation tickets from requirements document or inline prompt
+    Intelligently determines which layers (schema/backend/frontend) are needed
+
+    LOGIC-ONLY MODE (default - for existing projects):
+      Analyzes requirements and generates only needed tickets:
+      - Schema logic (if database changes needed)
+      - Backend logic (if API changes needed)
+      - Frontend logic (if UI changes needed)
+      - DB tests (if schema changes)
+      - Web tests (if implementation changes)
+
+    SCAFFOLD MODE (--scaffold flag - for new projects):
+      Generates full infrastructure setup + business logic:
+
+      SCAFFOLD BATCH:
+        1. Schema scaffold (auth, billing, infrastructure)
+        2. DB test (validate scaffold)
+        3. Backend scaffold (API infrastructure)
+        4. Frontend scaffold (UI infrastructure)
+        5. Web tests (validate scaffold E2E)
+
+      LOGIC BATCH:
+        1. Schema logic (business entities)
+        2. DB test (validate logic)
+        3. Backend logic (business API)
+        4. Frontend logic (business UI)
+        5. Web tests (validate logic E2E)
 
     Options:
-      --path=<file>         Path to requirements document (default: docs.md, relative to project directory)
-      --output=<file>       Output file for tickets (default: tickets.json, relative to project directory)
+      --path=<file>         Path to requirements document (default: docs.md)
+      --prompt="..."        Inline requirements (alternative to --path)
+      --scaffold            Enable scaffold mode for new projects
+      --output=<file>       Output file for tickets (default: tickets.json)
       --directory=<path>    Directory for Claude to explore (default: current directory)
       --dir=<path>          Alias for --directory
 
     Examples:
-      kosuke tickets                                    # Use docs.md in current directory
-      kosuke tickets --path=requirements.md             # Custom requirements file
-      kosuke tickets --output=my-tickets.json           # Custom output file
-      kosuke tickets --directory=./projects/my-app      # Analyze specific directory
-      kosuke tickets --dir=./my-app --path=docs/spec.md # Custom directory and requirements path
+      # Logic-only mode (existing projects)
+      kosuke tickets --prompt="Add dark mode toggle"
+      kosuke tickets --prompt="Add user notifications"
+      kosuke tickets --path=feature.md
+
+      # Scaffold mode (new projects)
+      kosuke tickets --scaffold --path=docs.md
+      kosuke tickets --scaffold --prompt="Build a task manager with teams"
+
+      # With custom options
+      kosuke tickets --directory=./my-app --prompt="Add export to CSV"
+      kosuke tickets --output=my-tickets.json --path=requirements.md
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
-    Implements and commits each ticket individually to current branch
-    Processes tickets in order: Schema → Backend → Frontend
+    Implements tickets and runs tests with automatic fixing
+    Processes tickets in order: Schema → DB Test → Backend → Frontend → Web Test
+    Commits in batches after each web-test completion
     Frontend tickets automatically include E2E testing (unless --no-test)
     All tickets include code review by default (unless --no-review)
 
@@ -340,28 +380,35 @@ COMMANDS:
     Examples:
       kosuke review                           # Review uncommitted changes
 
-  test [--ticket=<ID> | --prompt="..."] [options]
-    Run atomic browser tests with AI-powered automation (no fixing, no retries)
-    Uses Stagehand with Claude AI for intelligent browser interaction
-    For iterative test+fix workflow, use: kosuke ship --test
+  test --prompt="..." [options]
+    Run atomic tests (web E2E or database validation, no fixing, no retries)
+
+    Test types:
+      - web-test: Browser E2E testing with Stagehand + Claude AI
+      - db-test:  Database schema validation with Claude Code
+
+    For iterative test+fix workflow, use: kosuke build
 
     Options:
-      --ticket=<ID>         Ticket ID to test (from tickets.json, e.g., FRONTEND-1)
-      --prompt="..."        Custom test prompt (alternative to --ticket)
-      --url=<URL>           Base URL (default: http://localhost:3000)
-      --headless            Run in headless mode (invisible browser)
+      --prompt="..."        Test instructions (required)
+      --type=<type>         Test type: web-test or db-test (auto-detected if not specified)
+      --url=<URL>           Base URL for web tests (default: http://localhost:3000)
+      --db-url=<URL>        Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
+      --headless            Run browser in headless mode (web-test only, invisible)
       --verbose             Enable verbose output
-      --tickets=<file>      Path to tickets file (default: tickets.json, relative to directory)
       --directory=<path>    Directory to run tests in (default: current directory)
       --dir=<path>          Alias for --directory
 
     Examples:
-      kosuke test --ticket=FRONTEND-1                    # Test ticket (atomic)
-      kosuke test --prompt="Test user login flow"        # Test with custom prompt
-      kosuke test --ticket=FRONTEND-1 --url=http://localhost:4000
-      kosuke test --prompt="..." --verbose               # Enable verbose output
-      kosuke test --ticket=FRONTEND-1 --headless         # Run in headless mode
-      kosuke test --ticket=FRONTEND-1 --directory=./my-project  # Specific directory
+      kosuke test --prompt="Test user login flow" --type=web-test
+      kosuke test --prompt="Validate users table exists" --type=db-test
+      kosuke test --prompt="..." --url=http://localhost:4000
+      kosuke test --prompt="..." --db-url=postgres://...
+      kosuke test --prompt="..." --verbose --headless
+      kosuke test --prompt="..." --directory=./my-project
+
+    Note: This command is mainly used programmatically from kosuke build.
+          For ticket-based testing with retries, use: kosuke build
 
 GLOBAL OPTIONS:
 
