@@ -29,13 +29,14 @@ import { join, resolve } from 'path';
 import * as readline from 'readline';
 import simpleGit from 'simple-git';
 import type { BuildOptions, Ticket } from '../types.js';
-import { generateDBTestPrompt, generateWebTestPrompt } from '../utils/prompt-generator.js';
+import { generateWebTestPrompt } from '../utils/prompt-generator.js';
 import {
   loadTicketsFile,
   saveTicketsFile,
   updateTicketStatus,
   type TicketsFile,
 } from '../utils/tickets-manager.js';
+import { migrateCore } from './migrate.js';
 import { shipCore } from './ship.js';
 import { testCore } from './test.js';
 
@@ -232,31 +233,25 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
         console.log('   ✅ Status updated\n');
 
         // Step 2: Process ticket based on type
-        const isTestTicket = ticket.type === 'db-test' || ticket.type === 'web-test';
+        const isTestTicket = ticket.type === 'test';
 
         if (isTestTicket) {
           // This is a test ticket - run test with retry
           console.log(`\n${'='.repeat(60)}`);
-          console.log(`🧪 Running ${ticket.type === 'db-test' ? 'Database' : 'Web'} Test`);
+          console.log(`🧪 Running Test`);
           console.log(`${'='.repeat(60)}\n`);
 
           // Generate test prompt from ticket
-          const testPrompt =
-            ticket.type === 'db-test'
-              ? generateDBTestPrompt(ticket)
-              : generateWebTestPrompt(ticket);
+          const testPrompt = generateWebTestPrompt(ticket);
 
           let testResult = await testCore({
             prompt: testPrompt,
-            type: ticket.type === 'db-test' ? 'db-test' : 'web-test',
             context: {
               ticketId: ticket.id,
               ticketTitle: ticket.title,
               ticketDescription: ticket.description,
             },
-            directory: cwd,
             url,
-            dbUrl,
             headless,
             verbose,
             noLogs,
@@ -278,7 +273,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
               id: `${ticket.id}-FIX-${retryCount}`,
               title: `Fix ${ticket.id} test failures`,
               description: `Fix the following test failures:\n\n${testResult.error}\n\nOriginal ticket:\n${ticket.description}`,
-              type: 'logic', // Use logic type for fix tickets
+              type: 'backend', // Use backend type for test fix tickets
               estimatedEffort: 5,
               status: 'InProgress',
               category: ticket.category,
@@ -304,15 +299,12 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
             console.log(`🔄 Re-running test...\n`);
             testResult = await testCore({
               prompt: testPrompt,
-              type: ticket.type === 'db-test' ? 'db-test' : 'web-test',
               context: {
                 ticketId: ticket.id,
                 ticketTitle: ticket.title,
                 ticketDescription: ticket.description,
               },
-              directory: cwd,
               url,
-              dbUrl,
               headless,
               verbose,
               noLogs,
@@ -346,6 +338,34 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
             console.log(`🔍 Review fixes: ${shipResult.reviewFixCount}`);
           }
           console.log(`💰 Ship cost: $${shipResult.cost.toFixed(4)}`);
+
+          // If this is a schema ticket, run migrations
+          if (ticket.type === 'schema') {
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`🗄️  Phase 4: Database Migration & Validation`);
+            console.log(`${'='.repeat(60)}\n`);
+
+            const migrateResult = await migrateCore({
+              directory: cwd,
+              dbUrl,
+              context: {
+                ticketId: ticket.id,
+                ticketTitle: ticket.title,
+                ticketDescription: ticket.description,
+              },
+              noLogs,
+            });
+
+            if (!migrateResult.success) {
+              throw new Error(`Migration failed: ${migrateResult.error}`);
+            }
+
+            console.log(`\n✅ Migrations applied and validated`);
+            console.log(`   ✓ Migrations applied: ${migrateResult.migrationsApplied}`);
+            console.log(`   ✓ Seeding completed: ${migrateResult.seedingCompleted}`);
+            console.log(`   ✓ Validation passed: ${migrateResult.validationPassed}`);
+            console.log(`💰 Migration cost: $${migrateResult.cost.toFixed(4)}`);
+          }
         }
 
         // Step 3: Update ticket status to Done

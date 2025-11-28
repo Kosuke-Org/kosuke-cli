@@ -11,8 +11,9 @@
  *   getcode                 Explore GitHub repositories and fetch code
  *   tickets                 Generate implementation tickets from requirements
  *   build                   Batch process all tickets from tickets.json
+ *   migrate                 Apply database migrations and validate schema
  *   review                  Review codebase against CLAUDE.md rules
- *   test                    Run atomic tests (web E2E or database validation)
+ *   test                    Run atomic web E2E tests
  *
  * Usage:
  *   bun run kosuke sync-rules
@@ -22,8 +23,9 @@
  *   bun run kosuke getcode "query"
  *   bun run kosuke tickets
  *   bun run kosuke build
+ *   bun run kosuke migrate
  *   bun run kosuke review
- *   bun run kosuke test --prompt="Test user login flow" --type=web-test
+ *   bun run kosuke test --prompt="Test user login flow"
  *
  * Environment Variables:
  *   ANTHROPIC_API_KEY - Required for Claude API
@@ -35,6 +37,7 @@ import { analyseCommand } from './kosuke/commands/analyse.js';
 import { buildCommand } from './kosuke/commands/build.js';
 import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
 import { lintCommand } from './kosuke/commands/lint.js';
+import { migrateCommand } from './kosuke/commands/migrate.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
 import { reviewCommand } from './kosuke/commands/review.js';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
@@ -136,6 +139,18 @@ async function main() {
         break;
       }
 
+      case 'migrate': {
+        const options = {
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
+          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
+        };
+        await migrateCommand(options);
+        break;
+      }
+
       case 'review': {
         const options = {
           noLogs: args.includes('--no-logs'),
@@ -153,37 +168,22 @@ async function main() {
           console.log('\nOptions:');
           console.log('  --prompt="..."       Test instructions (required)');
           console.log(
-            '  --type=TYPE          Test type: web-test or db-test (auto-detected if not specified)'
-          );
-          console.log(
             '  --url=URL            Base URL for web tests (default: http://localhost:3000)'
           );
-          console.log('  --db-url=URL         Database URL for db tests (default: postgres://...)');
-          console.log(
-            '  --headless           Run in headless mode (invisible browser, web-test only)'
-          );
+          console.log('  --headless           Run in headless mode (invisible browser)');
           console.log('  --verbose            Enable verbose output');
           console.log('  --directory=PATH     Directory to test (default: cwd)');
           console.log('\nExamples:');
-          console.log('  kosuke test --prompt="Test user login flow" --type=web-test');
-          console.log('  kosuke test --prompt="Validate users table exists" --type=db-test');
-          console.log('  kosuke test --prompt="..." --verbose --headless');
+          console.log('  kosuke test --prompt="Test user login flow"');
+          console.log('  kosuke test --prompt="Test task creation" --verbose --headless');
           console.log('\nNote: This command is mainly used programmatically from kosuke build.');
           console.log('      For ticket-based testing with retries, use: kosuke build');
           process.exit(1);
         }
 
-        const typeArg = args.find((arg) => arg.startsWith('--type='))?.split('=')[1];
-        if (typeArg && typeArg !== 'web-test' && typeArg !== 'db-test') {
-          console.error('❌ Invalid test type. Use: web-test or db-test\n');
-          process.exit(1);
-        }
-
         const options = {
           prompt: promptArg,
-          type: typeArg as 'web-test' | 'db-test' | undefined,
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
-          dbUrl: args.find((arg) => arg.startsWith('--db-url='))?.split('=')[1],
           headless: args.includes('--headless'),
           verbose: args.includes('--verbose'),
           directory:
@@ -335,7 +335,7 @@ COMMANDS:
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json
     Implements tickets and runs tests with automatic fixing
-    Processes tickets in order: Schema → DB Test → Backend → Frontend → Web Test
+    Processes tickets in order: Schema (auto-validated) → Backend → Frontend → Web Test
     Commits in batches after each web-test completion
     Frontend tickets automatically include E2E testing (unless --no-test)
     All tickets include code review by default (unless --no-review)
@@ -372,6 +372,23 @@ COMMANDS:
 
     Note: If a ticket fails, fix the issue and run build again to resume
 
+  migrate [options]
+    Apply database migrations and validate schema changes
+    Uses Claude Code Agent to run migrations, seed database, and validate
+
+    Note: This command does NOT generate migrations (ship handles that)
+          Automatically called by build command after SCHEMA tickets
+
+    Options:
+      --directory=<path>    Directory to run migrations in (default: current directory)
+      --dir=<path>          Alias for --directory
+      --db-url=<url>        Database URL (default: postgres://postgres:postgres@localhost:5432/postgres)
+
+    Examples:
+      kosuke migrate                          # Apply migrations in current directory
+      kosuke migrate --directory=./my-app    # Apply in specific project
+      kosuke migrate --db-url=postgres://... # Custom database URL
+
   review
     Review current git diff against CLAUDE.md rules
     Identifies and fixes compliance issues in uncommitted changes
@@ -381,29 +398,24 @@ COMMANDS:
       kosuke review                           # Review uncommitted changes
 
   test --prompt="..." [options]
-    Run atomic tests (web E2E or database validation, no fixing, no retries)
+    Run atomic web E2E tests (no fixing, no retries)
 
-    Test types:
+    Test type:
       - web-test: Browser E2E testing with Stagehand + Claude AI
-      - db-test:  Database schema validation with Claude Code
 
     For iterative test+fix workflow, use: kosuke build
 
     Options:
       --prompt="..."        Test instructions (required)
-      --type=<type>         Test type: web-test or db-test (auto-detected if not specified)
       --url=<URL>           Base URL for web tests (default: http://localhost:3000)
-      --db-url=<URL>        Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
-      --headless            Run browser in headless mode (web-test only, invisible)
+      --headless            Run browser in headless mode (invisible)
       --verbose             Enable verbose output
       --directory=<path>    Directory to run tests in (default: current directory)
       --dir=<path>          Alias for --directory
 
     Examples:
-      kosuke test --prompt="Test user login flow" --type=web-test
-      kosuke test --prompt="Validate users table exists" --type=db-test
-      kosuke test --prompt="..." --url=http://localhost:4000
-      kosuke test --prompt="..." --db-url=postgres://...
+      kosuke test --prompt="Test user login flow"
+      kosuke test --prompt="Test task creation" --url=http://localhost:4000
       kosuke test --prompt="..." --verbose --headless
       kosuke test --prompt="..." --directory=./my-project
 

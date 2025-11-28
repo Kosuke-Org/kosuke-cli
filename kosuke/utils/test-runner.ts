@@ -7,7 +7,7 @@
 
 import type { TestRunnerOptions, TestRunnerResult } from '../types.js';
 import { testCore } from '../commands/test.js';
-import { generateDBTestPrompt, generateWebTestPrompt } from './prompt-generator.js';
+import { generateWebTestPrompt } from './prompt-generator.js';
 import { LogCollector } from './log-collector.js';
 import { analyzeAndFix } from './error-analyzer.js';
 
@@ -29,9 +29,8 @@ export async function runTestsWithRetry(options: TestRunnerOptions): Promise<Tes
   let testsPassing = false;
   let attempts = 0;
 
-  // Generate test prompt from ticket
-  const testPrompt =
-    ticket.type === 'db-test' ? generateDBTestPrompt(ticket) : generateWebTestPrompt(ticket);
+  // Generate test prompt from ticket (always web-test for now)
+  const testPrompt = generateWebTestPrompt(ticket);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     attempts = attempt;
@@ -41,7 +40,6 @@ export async function runTestsWithRetry(options: TestRunnerOptions): Promise<Tes
       // Run atomic test
       const testResult = await testCore({
         prompt: testPrompt,
-        type: ticket.type === 'db-test' ? 'db-test' : 'web-test',
         context: {
           ticketId: ticket.id,
           ticketTitle: ticket.title,
@@ -50,7 +48,6 @@ export async function runTestsWithRetry(options: TestRunnerOptions): Promise<Tes
         url,
         headless,
         verbose,
-        directory: cwd,
       });
 
       totalInputTokens += testResult.tokensUsed.input;

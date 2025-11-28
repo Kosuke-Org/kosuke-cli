@@ -7,9 +7,9 @@
 │                        STANDALONE COMMANDS                               │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  analyse    getcode    sync-rules    requirements    tickets            │
-│     │          │            │              │             │              │
-│     └──────────┴────────────┴──────────────┴─────────────┘              │
+│  analyse    getcode    sync-rules    requirements    tickets   migrate  │
+│     │          │            │              │             │        │     │
+│     └──────────┴────────────┴──────────────┴─────────────┴────────┘     │
 │                              │                                          │
 │                        (independent)                                    │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -25,6 +25,7 @@
 │       ├─► review (conditional)             ├─► ship (for impl tickets)  │
 │       └─► lint (always)                    │   ├─► review (conditional) │
 │                                            │   └─► lint (always)        │
+│                                            ├─► migrate (after SCHEMA)   │
 │                                            ├─► test (for test tickets)  │
 │                                            │   └─► ship (if test fails) │
 │                                            └─► commit (per batch)       │
@@ -51,18 +52,19 @@
 
 ## Command Details Table
 
-| Command          | Dependencies                            | Called By           | Core/Wrapper | Description                               |
-| ---------------- | --------------------------------------- | ------------------- | ------------ | ----------------------------------------- |
-| **analyse**      | -                                       | -                   | Core         | Analyze code quality issues               |
-| **getcode**      | repository-manager, repository-resolver | -                   | Core         | Explore GitHub repositories               |
-| **sync-rules**   | -                                       | -                   | Core         | Sync CLAUDE.md rules from template        |
-| **requirements** | -                                       | -                   | Core         | Interactive requirements gathering        |
-| **tickets**      | -                                       | -                   | Core         | Generate tickets with test coverage       |
-| **lint**         | validator.ts                            | review, ship, build | Core         | Fix linting errors with Claude            |
-| **review**       | reviewCore, lint                        | ship (conditional)  | Wrapper      | Review git diff against CLAUDE.md         |
-| **test**         | testCore, Stagehand, postgres           | build               | Core         | Web E2E & DB schema testing (atomic)      |
-| **ship**         | reviewCore, lint                        | build               | Orchestrator | Implement a single ticket (no commit)     |
-| **build**        | ship, test, git commit                  | -                   | Orchestrator | Build project from tickets, batch commits |
+| Command          | Dependencies                            | Called By            | Core/Wrapper | Description                               |
+| ---------------- | --------------------------------------- | -------------------- | ------------ | ----------------------------------------- |
+| **analyse**      | -                                       | -                    | Core         | Analyze code quality issues               |
+| **getcode**      | repository-manager, repository-resolver | -                    | Core         | Explore GitHub repositories               |
+| **sync-rules**   | -                                       | -                    | Core         | Sync CLAUDE.md rules from template        |
+| **requirements** | -                                       | -                    | Core         | Interactive requirements gathering        |
+| **tickets**      | -                                       | -                    | Core         | Generate tickets (no db-test)             |
+| **lint**         | validator.ts                            | review, ship, build  | Core         | Fix linting errors with Claude            |
+| **migrate**      | claude-agent.ts                         | build (after SCHEMA) | Core         | Apply migrations, seed DB, validate       |
+| **review**       | reviewCore, lint                        | ship (conditional)   | Wrapper      | Review git diff against CLAUDE.md         |
+| **test**         | testCore, Stagehand                     | build                | Core         | Web E2E testing (atomic)                  |
+| **ship**         | reviewCore, lint                        | build                | Orchestrator | Implement a single ticket (no commit)     |
+| **build**        | ship, migrate, test, git commit         | -                    | Orchestrator | Build project from tickets, batch commits |
 
 ## Utility Dependencies
 
@@ -91,8 +93,11 @@ build
 ├── ship (for implementation tickets: schema, backend, frontend)
 │   ├── reviewCore (conditional via build --review flag)
 │   └── lint (always)
-├── test (for test tickets: db-test, web-test)
-│   ├── Stagehand (web-test) or postgres (db-test)
+├── migrate (after SCHEMA tickets, automatic)
+│   ├── claude-agent.ts (runs db:migrate and db:seed)
+│   └── validation (verifies schema changes applied)
+├── test (for test tickets: web-test only)
+│   ├── Stagehand (web E2E testing)
 │   └── ship (if test fails, retry up to 3 times)
 └── git commit (per batch: after web-test completion)
 
@@ -109,11 +114,15 @@ lint
 └── validator.ts
 
 test
-├── web-test (auto-detected from ticket ID or --type flag)
-│   ├── Stagehand (browser automation)
-│   └── claude-agent.ts (AI-driven testing)
-└── db-test (auto-detected from ticket ID or --type flag)
-    └── postgres (query information_schema for validation)
+└── web-test (only web E2E testing supported)
+    ├── Stagehand (browser automation)
+    └── claude-agent.ts (AI-driven testing)
+
+migrate (standalone or called by build after SCHEMA tickets)
+├── claude-agent.ts (applies migrations and seeds DB)
+├── db:migrate (apply pending migrations)
+├── db:seed (seed database with initial data)
+└── validation (verify schema changes applied correctly)
 
 requirements
 └── Anthropic SDK directly (custom tools for docs.md)
@@ -121,21 +130,18 @@ requirements
 tickets (two modes)
 ├── SCAFFOLD MODE (--scaffold flag):
 │   ├── Scaffold batch:
-│   │   ├── claude-agent.ts (schema scaffold)
-│   │   ├── claude-agent.ts (db-test 1)
+│   │   ├── claude-agent.ts (schema scaffold, auto-validated by migrate)
 │   │   ├── claude-agent.ts (backend scaffold)
 │   │   ├── claude-agent.ts (frontend scaffold)
 │   │   └── claude-agent.ts (web-tests 1..N)
 │   └── Logic batch:
-│       ├── claude-agent.ts (schema logic)
-│       ├── claude-agent.ts (db-test 2)
+│       ├── claude-agent.ts (schema logic, auto-validated by migrate)
 │       ├── claude-agent.ts (backend logic)
 │       ├── claude-agent.ts (frontend logic)
 │       └── claude-agent.ts (web-tests N+1..M)
 └── LOGIC-ONLY MODE (default):
     ├── claude-agent.ts (layer analysis: schema/backend/frontend)
-    ├── claude-agent.ts (schema logic, if needed)
-    ├── claude-agent.ts (db-test, if schema)
+    ├── claude-agent.ts (schema logic, if needed, auto-validated by migrate)
     ├── claude-agent.ts (backend logic, if needed)
     ├── claude-agent.ts (frontend logic, if needed)
     └── claude-agent.ts (web-tests, if implementation)
@@ -148,6 +154,7 @@ tickets (two modes)
 | All commands          | Anthropic Claude API     | `ANTHROPIC_API_KEY` (required)                                     |
 | All commands          | Kosuke API (optional)    | `KOSUKE_BASE_URL`, `KOSUKE_API_KEY`, `KOSUKE_PROJECT_ID` (logging) |
 | build (default)       | GitHub API               | `GITHUB_TOKEN` (required for git commits)                          |
+| migrate               | PostgreSQL               | `POSTGRES_URL` (default: postgres://postgres:postgres@localhost)   |
 | sync-rules (--pr)     | GitHub API               | `GITHUB_TOKEN` (required)                                          |
 | analyse (--pr)        | GitHub API               | `GITHUB_TOKEN` (required)                                          |
 | lint (--pr)           | GitHub API               | `GITHUB_TOKEN` (required)                                          |
@@ -318,6 +325,35 @@ Note: Atomic testing (no fixes, no retries). For test+fix workflow, use build co
 | `docs.md`       | requirements | Product requirements and specifications |
 | `tickets.json`  | tickets      | Structured implementation tickets       |
 | `.kosukeignore` | User         | Exclude files/directories from analysis |
+
+#### Ticket JSON Structure
+
+Each ticket in `tickets.json` has the following structure:
+
+```json
+{
+  "id": "LOGIC-BACKEND-1",
+  "title": "Create user API endpoints",
+  "description": "Detailed description with acceptance criteria...",
+  "type": "schema" | "backend" | "frontend" | "test",
+  "estimatedEffort": 5,
+  "status": "Todo" | "InProgress" | "Done" | "Failed",
+  "category": "users"
+}
+```
+
+**Valid Ticket Types:**
+
+- `"schema"` - Database schema changes (auto-validated after implementation)
+- `"backend"` - Backend API/logic implementation
+- `"frontend"` - Frontend UI implementation
+- `"test"` - E2E tests (web tests, database tests, etc.)
+
+**Important:** All test tickets use `type: "test"` regardless of the test category. The ticket ID prefix distinguishes the test type:
+
+- `LOGIC-WEB-TEST-1` → Web E2E test (type: "test")
+- `LOGIC-DB-TEST-1` → Database test (type: "test")
+- `SCAFFOLD-WEB-TEST-1` → Scaffold web test (type: "test")
 
 ### Cached Files (Git Ignored)
 

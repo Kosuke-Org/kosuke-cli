@@ -78,6 +78,7 @@ export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCore } from './kosuke/commands/ship.js';
 export { buildCommand } from './kosuke/commands/build.js';
+export { migrateCommand, migrateCore } from './kosuke/commands/migrate.js';
 export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
 export { testCommand, testCore } from './kosuke/commands/test.js';
 export { runTestsWithRetry } from './kosuke/utils/test-runner.js';
@@ -115,6 +116,8 @@ export type {
   ShipOptions,
   ShipResult,
   BuildOptions,
+  MigrateOptions,
+  MigrateResult,
   ReviewContext,
   ReviewOptions,
   ReviewResult,

@@ -30,29 +30,3 @@ ${ticket.description}
 
 Return a clear success or failure status with details about what was tested and any issues found.`;
 }
-
-/**
- * Generate a structured database test prompt from a ticket
- */
-export function generateDBTestPrompt(ticket: Ticket): string {
-  return `Validate the database schema implementation:
-
-**Ticket:** ${ticket.title}
-
-**Requirements:**
-${ticket.description}
-
-**Validation Instructions:**
-1. Connect to the database
-2. Verify all tables mentioned in requirements exist
-3. Check table structure (column names and types)
-4. Validate constraints and indexes if specified
-5. Ensure no errors or inconsistencies
-
-**Success Criteria:**
-- All required tables exist
-- Tables have correct structure
-- No schema errors or warnings
-
-Return a clear success or failure status with details about what was validated.`;
-}

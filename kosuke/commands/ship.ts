@@ -49,7 +49,7 @@ function validateTicketData(ticketData: Ticket): void {
 /**
  * Build system prompt for ticket implementation
  */
-function buildImplementationPrompt(ticket: Ticket, dbUrl: string): string {
+function buildImplementationPrompt(ticket: Ticket, _dbUrl: string): string {
   const isSchemaTicket = ticket.id.toUpperCase().startsWith('SCHEMA-');
 
   const schemaMigrationInstructions = isSchemaTicket
@@ -58,14 +58,9 @@ function buildImplementationPrompt(ticket: Ticket, dbUrl: string): string {
 **Database Schema Changes (CRITICAL FOR SCHEMA TICKETS):**
 This is a SCHEMA ticket. After making changes to database schema files:
 1. Run \`bun run db:generate\` to generate Drizzle migrations
-2. **CRITICAL**: Run \`POSTGRES_URL="${dbUrl}" bun run db:migrate\` to apply migrations to the database
-   ⚠️ **MIGRATIONS MUST BE APPLIED AFTER GENERATION** - Generating migrations alone does NOT update the database!
-   ⚠️ The database schema will NOT change until you run \`db:migrate\` to apply the generated migrations
-   ⚠️ Skipping this step will cause runtime errors when the app expects the new schema
-3. Run \`POSTGRES_URL="${dbUrl}" bun run db:seed\` to seed the database with initial data
-4. Verify migration files were created in lib/db/migrations/
-5. Handle any migration errors before proceeding
-6. Ensure schema changes follow Drizzle ORM best practices from project guidelines
+2. Verify migration files were created in lib/db/migrations/
+3. **DO NOT run db:migrate** - this will be handled automatically after implementation
+4. Ensure schema changes follow Drizzle ORM best practices from project guidelines
 `
     : '';
 
