@@ -15,7 +15,7 @@ const __dirname = dirname(__filename);
 /**
  * Command names supported by the logger
  */
-export type CommandName = 'ship' | 'test' | 'review' | 'getcode' | 'tickets' | 'migrate';
+export type CommandName = 'ship' | 'test' | 'review' | 'getcode' | 'tickets' | 'migrate' | 'plan';
 
 /**
  * Execution status

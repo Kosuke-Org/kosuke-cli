@@ -87,6 +87,9 @@ cleanup() {
 # Create tmux session with two panes
 tmux new-session -d -s "$SESSION_NAME" -n "kosuke"
 
+# Enable mouse support (scroll, click, resize panes)
+tmux set-option -t "$SESSION_NAME" -g mouse on
+
 # Left pane: build:watch
 tmux send-keys -t "$SESSION_NAME" "docker exec -it $CONTAINER_NAME bash -c 'npm run build:watch'" Enter
 
@@ -94,7 +97,7 @@ tmux send-keys -t "$SESSION_NAME" "docker exec -it $CONTAINER_NAME bash -c 'npm 
 tmux split-window -h -t "$SESSION_NAME"
 
 # Right pane: interactive shell
-tmux send-keys -t "$SESSION_NAME" "docker exec -it $CONTAINER_NAME bash" Enter
+tmux send-keys -t "$SESSION_NAME" "docker exec -it $CONTAINER_NAME bash -c 'kosuke'" Enter
 
 # Focus on right pane (interactive shell)
 tmux select-pane -t "$SESSION_NAME":0.1

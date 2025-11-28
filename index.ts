@@ -8,6 +8,7 @@
  *   analyse                 Analyze and fix code quality issues
  *   lint                    Fix linting errors with Claude AI
  *   requirements            Interactive requirements gathering
+ *   plan                    AI-driven ticket planning from feature/bug descriptions
  *   getcode                 Explore GitHub repositories and fetch code
  *   tickets                 Generate implementation tickets from requirements
  *   build                   Batch process all tickets from tickets.json
@@ -38,6 +39,7 @@ import { buildCommand } from './kosuke/commands/build.js';
 import { getCodeCommand, parseGetCodeArgs } from './kosuke/commands/getcode.js';
 import { lintCommand } from './kosuke/commands/lint.js';
 import { migrateCommand } from './kosuke/commands/migrate.js';
+import { planCommand } from './kosuke/commands/plan.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
 import { reviewCommand } from './kosuke/commands/review.js';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
@@ -94,6 +96,36 @@ async function main() {
 
       case 'requirements': {
         await requirementsCommand();
+        break;
+      }
+
+      case 'plan': {
+        const options = {
+          prompt: args.find((arg) => arg.startsWith('--prompt='))?.split('=')[1] || '',
+          directory:
+            args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
+            args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
+          output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
+          noLogs: args.includes('--no-logs'),
+        };
+
+        if (!options.prompt) {
+          console.error('❌ The --prompt flag is required\n');
+          console.log('Usage: kosuke plan --prompt="..." [OPTIONS]');
+          console.log('\nOptions:');
+          console.log('  --prompt="..."       Feature or bug description (required)');
+          console.log('  --directory=PATH     Directory with existing code (default: cwd)');
+          console.log('  --output=FILE        Output file for tickets (default: tickets.json)');
+          console.log('\nExamples:');
+          console.log('  kosuke plan --prompt="Add dark mode toggle"');
+          console.log('  kosuke plan --prompt="Fix login timeout bug" --directory=./my-app');
+          console.log(
+            '  kosuke plan --prompt="Add user notifications" --output=feature-tickets.json'
+          );
+          process.exit(1);
+        }
+
+        await planCommand(options);
         break;
       }
 
@@ -267,6 +299,28 @@ COMMANDS:
     Examples:
       kosuke requirements
 
+  plan --prompt="..." [options]
+    AI-driven ticket planning from feature/bug descriptions
+    Analyzes existing codebase and asks clarification questions
+    Generates tickets.json compatible with build command
+
+    Options:
+      --prompt="..."        Feature or bug description (required)
+      --directory=<path>    Directory with existing code (default: current directory)
+      --dir=<path>          Alias for --directory
+      --output=<file>       Output file for tickets (default: tickets.json)
+
+    Examples:
+      kosuke plan --prompt="Add dark mode toggle"
+      kosuke plan --prompt="Fix login timeout bug" --directory=./my-app
+      kosuke plan --prompt="Add user notifications" --output=feature-tickets.json
+
+    Features:
+      - Analyzes codebase to understand existing patterns
+      - Asks non-technical clarification questions
+      - Auto-detects ticket types (SCHEMA, BACKEND, FRONTEND, WEB-TEST)
+      - Reply "go with recommendations" to accept all defaults
+
   getcode [repo] "<query>" [options]
     Explore GitHub repositories and fetch code implementations
     Uses Claude Code Agent to find and explain code
@@ -282,55 +336,40 @@ COMMANDS:
       kosuke getcode -t "Show me pagination examples"
 
   tickets [options]
-    Generate implementation tickets from requirements document or inline prompt
-    Intelligently determines which layers (schema/backend/frontend) are needed
+    Generate implementation tickets from requirements document or prompt
+    
+    Two modes of operation:
 
-    LOGIC-ONLY MODE (default - for existing projects):
-      Analyzes requirements and generates only needed tickets:
-      - Schema logic (if database changes needed)
-      - Backend logic (if API changes needed)
-      - Frontend logic (if UI changes needed)
-      - DB tests (if schema changes)
-      - Web tests (if implementation changes)
+    PROMPT MODE (--prompt flag):
+      Uses 'plan' command internally for INTERACTIVE ticket creation.
+      Claude asks clarification questions before generating tickets.
+      Best for: Adding features or fixing bugs in existing projects.
 
-    SCAFFOLD MODE (--scaffold flag - for new projects):
-      Generates full infrastructure setup + business logic:
+    DOCUMENT MODE (--path or docs.md):
+      Generates tickets directly from requirements document.
+      No clarification questions - assumes requirements are complete.
+      Best for: New projects with docs.md from 'kosuke requirements'.
 
-      SCAFFOLD BATCH:
-        1. Schema scaffold (auth, billing, infrastructure)
-        2. DB test (validate scaffold)
-        3. Backend scaffold (API infrastructure)
-        4. Frontend scaffold (UI infrastructure)
-        5. Web tests (validate scaffold E2E)
-
-      LOGIC BATCH:
-        1. Schema logic (business entities)
-        2. DB test (validate logic)
-        3. Backend logic (business API)
-        4. Frontend logic (business UI)
-        5. Web tests (validate logic E2E)
+    SCAFFOLD MODE (--scaffold, document mode only):
+      Generates infrastructure adaptation + business logic tickets.
 
     Options:
+      --prompt="..."        Feature/bug description (triggers interactive mode)
       --path=<file>         Path to requirements document (default: docs.md)
-      --prompt="..."        Inline requirements (alternative to --path)
-      --scaffold            Enable scaffold mode for new projects
+      --scaffold            Enable scaffold mode (document mode only)
       --output=<file>       Output file for tickets (default: tickets.json)
       --directory=<path>    Directory for Claude to explore (default: current directory)
       --dir=<path>          Alias for --directory
 
     Examples:
-      # Logic-only mode (existing projects)
-      kosuke tickets --prompt="Add dark mode toggle"
-      kosuke tickets --prompt="Add user notifications"
-      kosuke tickets --path=feature.md
+      # Interactive mode (with clarification questions)
+      kosuke tickets --prompt="Add dark mode toggle" --dir=./my-app
+      kosuke tickets --prompt="Fix login timeout bug"
 
-      # Scaffold mode (new projects)
-      kosuke tickets --scaffold --path=docs.md
-      kosuke tickets --scaffold --prompt="Build a task manager with teams"
-
-      # With custom options
-      kosuke tickets --directory=./my-app --prompt="Add export to CSV"
-      kosuke tickets --output=my-tickets.json --path=requirements.md
+      # Document mode (no questions, from docs.md)
+      kosuke tickets                              # Uses docs.md
+      kosuke tickets --path=feature.md            # Custom file
+      kosuke tickets --scaffold                   # Scaffold + logic from docs.md
 
   build [options]
     Batch process all "Todo" and "Error" tickets from tickets.json

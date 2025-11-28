@@ -6,6 +6,7 @@ const knipConfig = {
   ignore: [
     // Test files - testing utilities may not be fully utilized
     '__tests__/**',
+    'projects/**',
   ],
   ignoreDependencies: [],
   ignoreBinaries: [],

@@ -254,6 +254,13 @@ export interface MigrateResult {
   error?: string;
 }
 
+export interface PlanOptions {
+  prompt: string; // Feature or bug description
+  directory?: string; // Directory with existing code (default: cwd)
+  output?: string; // Output file for tickets (default: tickets.json)
+  noLogs?: boolean;
+}
+
 export interface TestRunnerOptions {
   ticket: Ticket;
   cwd: string;

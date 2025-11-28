@@ -1,9 +1,19 @@
 /**
- * Tickets command - Generate tickets from requirements document
+ * Tickets command - Generate tickets from requirements document or prompt
  *
- * This command analyzes a requirements document and generates structured tickets:
+ * This command has two modes:
  *
- * SCAFFOLD MODE (--scaffold flag):
+ * 1. PROMPT MODE (--prompt flag):
+ *    Uses the `plan` command internally for interactive ticket creation.
+ *    Claude asks clarification questions before generating tickets.
+ *    Best for: Adding features or fixing bugs in existing projects.
+ *
+ * 2. DOCUMENT MODE (--path or docs.md):
+ *    Generates tickets directly from a requirements document.
+ *    No clarification questions - assumes requirements are complete.
+ *    Best for: New projects with detailed requirements from `kosuke requirements`.
+ *
+ * SCAFFOLD MODE (--scaffold flag, document mode only):
  *   SCAFFOLD BATCH (template adaptation):
  *     1. SCAFFOLD-SCHEMA-1 (database infrastructure changes, auto-validated)
  *     2. SCAFFOLD-BACKEND-X (API infrastructure changes)
@@ -15,20 +25,13 @@
  *     2. LOGIC-BACKEND-1 (business API)
  *     3. LOGIC-FRONTEND-1 (business UI)
  *     4. LOGIC-WEB-TEST-1 (validate logic E2E)
- *     ... (multiple logic batches per feature)
- *
- * LOGIC-ONLY MODE (default):
- *   Only generates LOGIC tickets for new features
- *
- * Claude Code Agent explores the codebase to understand the tech stack and
- * generates contextual tickets in a single comprehensive analysis.
  *
  * Usage:
- *   kosuke tickets                                    # Logic-only mode, use docs.md
- *   kosuke tickets --scaffold                         # Scaffold + logic mode
+ *   kosuke tickets                                    # Use docs.md (no questions)
+ *   kosuke tickets --scaffold                         # Scaffold + logic from docs.md
  *   kosuke tickets --path=custom.md                   # Custom requirements file
- *   kosuke tickets --prompt="Add dark mode"           # Inline requirements
- *   kosuke tickets --directory=./my-app               # Analyze specific directory
+ *   kosuke tickets --prompt="Add dark mode"           # Interactive with questions
+ *   kosuke tickets --prompt="Fix login bug" --dir=./  # Interactive with questions
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -36,6 +39,7 @@ import { join, resolve } from 'path';
 import type { Ticket, TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
+import { planCore } from './plan.js';
 
 /**
  * Build unified system prompt for comprehensive ticket generation
@@ -360,10 +364,41 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     );
   }
 
-  if (options.prompt) {
-    requirementsContent = options.prompt;
-    console.log(`📝 Using inline prompt (${requirementsContent.length} characters)\n`);
-  } else if (options.path) {
+  // If prompt is provided (without path), use plan command for interactive ticket creation
+  if (options.prompt && !options.path) {
+    console.log('📝 Using interactive planning mode for prompt-based ticket creation...\n');
+
+    const planResult = await planCore({
+      prompt: options.prompt,
+      directory: projectPath,
+      output: options.output || 'tickets.json',
+      noLogs: options.noLogs,
+    });
+
+    if (!planResult.success) {
+      throw new Error(planResult.error || 'Plan command failed');
+    }
+
+    // Convert plan result to tickets result format
+    const schemaTickets = planResult.tickets.filter((t) => t.type === 'schema');
+    const backendTickets = planResult.tickets.filter((t) => t.type === 'backend');
+    const frontendTickets = planResult.tickets.filter((t) => t.type === 'frontend');
+    const testTickets = planResult.tickets.filter((t) => t.type === 'test');
+
+    return {
+      schemaTickets,
+      backendTickets,
+      frontendTickets,
+      testTickets,
+      totalTickets: planResult.tickets.length,
+      projectPath,
+      tokensUsed: planResult.tokensUsed,
+      cost: planResult.cost,
+      conversationMessages: [],
+    };
+  }
+
+  if (options.path) {
     const requirementsPath = join(projectPath, options.path);
     if (!existsSync(requirementsPath)) {
       throw new Error(
