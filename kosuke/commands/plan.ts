@@ -19,6 +19,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
+import { glob } from 'glob';
 import * as readline from 'readline';
 import type { PlanOptions, Ticket } from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
@@ -46,14 +47,58 @@ export interface PlanResult {
  */
 interface PlanSession {
   prompt: string;
-  codeContext: string;
   messages: Anthropic.MessageParam[];
 }
 
 /**
- * Tool definitions for ticket generation
+ * Tool definitions for planning - includes file exploration and ticket generation
  */
 const PLAN_TOOLS: Anthropic.Tool[] = [
+  {
+    name: 'read_file',
+    description:
+      'Read the contents of a file. Use this to explore the codebase and understand existing patterns, conventions, and implementations.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the file to read (relative to project root)',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'list_directory',
+    description:
+      'List files and directories in a given path. Use this to explore the project structure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the directory to list (relative to project root, use "." for root)',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'glob_search',
+    description:
+      'Find files matching a glob pattern. Use this to find specific file types or locate files by name pattern.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Glob pattern to match (e.g., "**/*.ts", "lib/db/**/*.ts", "**/schema*.ts")',
+        },
+      },
+      required: ['pattern'],
+    },
+  },
   {
     name: 'write_tickets',
     description:
@@ -106,22 +151,45 @@ const PLAN_TOOLS: Anthropic.Tool[] = [
 ];
 
 /**
+ * Read CLAUDE.md from project directory if it exists
+ */
+function readClaudeMd(cwd: string): string | null {
+  const claudeMdPath = join(cwd, 'CLAUDE.md');
+  if (existsSync(claudeMdPath)) {
+    try {
+      return readFileSync(claudeMdPath, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Build system prompt for plan command
  */
-function buildPlanSystemPrompt(codeContext: string): string {
+function buildPlanSystemPrompt(claudeMdContent: string | null): string {
+  const claudeSection = claudeMdContent
+    ? `
+
+**PROJECT CONTEXT (from CLAUDE.md):**
+
+${claudeMdContent}
+
+---
+`
+    : '';
+
   return `You are an expert software architect helping plan implementation tickets for a feature or bug fix.
 
 **YOUR PRIMARY OBJECTIVE:** Gather enough information through clarification questions to create actionable implementation tickets that can be processed by an automated build system.
-
-**CODE CONTEXT:**
-The user is working with the following codebase structure:
-${codeContext}
-
+${claudeSection}
 **Your Workflow:**
 
-1. **Initial Analysis**: When the user describes a feature or bug:
-   - Analyze what they want to achieve
-   - Consider the existing codebase patterns from the code context
+1. **Explore Codebase**:
+   - Use list_directory to explore relevant parts of the codebase
+   - Read existing similar implementations to understand patterns
+   - Analyze what the user wants to achieve
    - Identify what's unclear or needs user input
 
 2. **Ask Clarification Questions**: Present questions in this format:
@@ -213,79 +281,123 @@ Implement dark mode toggle in the settings page.
 }
 
 /**
- * Gather code context from directory
+ * Execute read_file tool
  */
-function gatherCodeContext(directory: string, maxDepth = 3): string {
-  const context: string[] = [];
-  const relevantFiles: string[] = [];
+function executeReadFile(
+  toolInput: Record<string, unknown>,
+  cwd: string
+): { success: boolean; content: string } {
+  try {
+    const filePath = toolInput.path as string;
+    const fullPath = join(cwd, filePath);
 
-  // Key files to always include if they exist
-  const keyFiles = [
-    'CLAUDE.md',
-    'package.json',
-    'tsconfig.json',
-    'lib/db/schema/index.ts',
-    'lib/db/schema.ts',
-    'app/layout.tsx',
-    'components/ui/button.tsx',
-  ];
-
-  // Read key files
-  for (const file of keyFiles) {
-    const filePath = join(directory, file);
-    if (existsSync(filePath)) {
-      try {
-        const content = readFileSync(filePath, 'utf-8');
-        // Truncate large files
-        const truncated =
-          content.length > 2000 ? content.slice(0, 2000) + '\n...[truncated]' : content;
-        relevantFiles.push(`### ${file}\n\`\`\`\n${truncated}\n\`\`\``);
-      } catch {
-        // Skip files that can't be read
-      }
+    if (!existsSync(fullPath)) {
+      return { success: false, content: `File not found: ${filePath}` };
     }
+
+    const stats = statSync(fullPath);
+    if (stats.isDirectory()) {
+      return { success: false, content: `Path is a directory, not a file: ${filePath}` };
+    }
+
+    const content = readFileSync(fullPath, 'utf-8');
+
+    console.log(`\n   📖 Reading: ${filePath}`);
+    return { success: true, content };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { success: false, content: `Error reading file: ${msg}` };
   }
+}
 
-  // Build directory tree
-  function buildTree(dir: string, prefix = '', depth = 0): string[] {
-    if (depth > maxDepth) return [];
+/**
+ * Execute list_directory tool
+ */
+function executeListDirectory(
+  toolInput: Record<string, unknown>,
+  cwd: string
+): { success: boolean; content: string } {
+  try {
+    const dirPath = (toolInput.path as string) || '.';
+    const fullPath = join(cwd, dirPath);
 
+    if (!existsSync(fullPath)) {
+      return { success: false, content: `Directory not found: ${dirPath}` };
+    }
+
+    const stats = statSync(fullPath);
+    if (!stats.isDirectory()) {
+      return { success: false, content: `Path is not a directory: ${dirPath}` };
+    }
+
+    const entries = readdirSync(fullPath);
     const items: string[] = [];
+
+    // Filter out common ignored directories
     const ignoreDirs = ['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', '.tmp'];
 
-    try {
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        if (ignoreDirs.includes(entry) || entry.startsWith('.')) continue;
+    for (const entry of entries.sort()) {
+      if (entry.startsWith('.') && entry !== '.env.example') continue;
+      if (ignoreDirs.includes(entry)) continue;
 
-        const fullPath = join(dir, entry);
-        try {
-          const stat = statSync(fullPath);
-          if (stat.isDirectory()) {
-            items.push(`${prefix}📁 ${entry}/`);
-            items.push(...buildTree(fullPath, prefix + '  ', depth + 1));
-          } else {
-            items.push(`${prefix}📄 ${entry}`);
-          }
-        } catch {
-          // Skip entries that can't be stat'd
+      const entryPath = join(fullPath, entry);
+      try {
+        const entryStat = statSync(entryPath);
+        if (entryStat.isDirectory()) {
+          items.push(`📁 ${entry}/`);
+        } else {
+          items.push(`📄 ${entry}`);
         }
+      } catch {
+        items.push(`❓ ${entry}`);
       }
-    } catch {
-      // Skip directories that can't be read
     }
 
-    return items;
+    console.log(`\n   📂 Listing: ${dirPath}`);
+    return { success: true, content: items.join('\n') || '(empty directory)' };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { success: false, content: `Error listing directory: ${msg}` };
   }
+}
 
-  const tree = buildTree(directory);
-  context.push('## Project Structure\n```\n' + tree.slice(0, 100).join('\n') + '\n```');
+/**
+ * Execute glob_search tool
+ */
+async function executeGlobSearch(
+  toolInput: Record<string, unknown>,
+  cwd: string
+): Promise<{ success: boolean; content: string }> {
+  try {
+    const pattern = toolInput.pattern as string;
 
-  if (relevantFiles.length > 0) {
-    context.push('\n## Key Files\n' + relevantFiles.join('\n\n'));
+    const files = await glob(pattern, {
+      cwd,
+      nodir: true,
+      ignore: ['node_modules/**', '.git/**', 'dist/**', 'build/**', '.next/**', '__pycache__/**'],
+    });
+
+    if (files.length === 0) {
+      return { success: true, content: `No files found matching: ${pattern}` };
+    }
+
+    // Limit results
+    const maxResults = 50;
+    const truncated = files.length > maxResults;
+    const displayFiles = files.slice(0, maxResults);
+
+    console.log(`\n   🔍 Found ${files.length} file(s) matching: ${pattern}`);
+
+    let content = displayFiles.join('\n');
+    if (truncated) {
+      content += `\n\n...[showing ${maxResults} of ${files.length} files]`;
+    }
+
+    return { success: true, content };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { success: false, content: `Error searching files: ${msg}` };
   }
-
-  return context.join('\n');
 }
 
 /**
@@ -402,12 +514,14 @@ function formatTokenUsage(
 
 /**
  * Process a single Claude interaction with streaming
+ * Handles multiple tool calls in a loop until Claude stops calling tools
  */
 async function processClaudeInteraction(
   userInput: string,
   previousMessages: Anthropic.MessageParam[],
   systemPrompt: string,
-  ticketsPath: string
+  ticketsPath: string,
+  cwd: string
 ): Promise<{
   response: string;
   messages: Anthropic.MessageParam[];
@@ -423,67 +537,117 @@ async function processClaudeInteraction(
   });
 
   // Build message history
-  const messages: Anthropic.MessageParam[] = userInput
+  let messages: Anthropic.MessageParam[] = userInput
     ? [...previousMessages, { role: 'user', content: userInput }]
     : previousMessages;
 
-  // Stream the response
-  const stream = await anthropic.messages.stream({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 8096,
-    system: systemPrompt,
-    tools: PLAN_TOOLS,
-    messages,
-  });
-
   let responseText = '';
-  const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-  let isFirstOutput = true;
-
-  // Process stream events
-  for await (const event of stream) {
-    if (event.type === 'content_block_start') {
-      if (event.content_block.type === 'text') {
-        if (isFirstOutput) {
-          process.stdout.write('\n> Claude:\n');
-          isFirstOutput = false;
-        }
-      }
-    } else if (event.type === 'content_block_delta') {
-      if (event.delta.type === 'text_delta') {
-        const delta = event.delta.text;
-        responseText += delta;
-        process.stdout.write(delta);
-      }
-    }
-  }
-
-  // Get final message
-  const finalMessage = await stream.finalMessage();
-
-  // Extract tool uses
-  for (const block of finalMessage.content) {
-    if (block.type === 'tool_use') {
-      toolUses.push({
-        id: block.id,
-        name: block.name,
-        input: block.input as Record<string, unknown>,
-      });
-    }
-  }
-
-  // Execute tools
-  let updatedMessages = messages;
   let tickets: Ticket[] = [];
   let ticketsCreated = false;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheCreationTokens = 0;
+  let totalCacheReadTokens = 0;
+  let isFirstOutput = true;
 
-  if (toolUses.length > 0) {
-    updatedMessages = [...messages, { role: 'assistant', content: finalMessage.content }];
+  // Loop until Claude stops calling tools
+  const maxIterations = 20; // Safety limit
+  let iterations = 0;
 
+  while (iterations < maxIterations) {
+    iterations++;
+
+    // Stream the response
+    const stream = await anthropic.messages.stream({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8096,
+      system: systemPrompt,
+      tools: PLAN_TOOLS,
+      messages,
+    });
+
+    let currentText = '';
+    const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+
+    // Process stream events
+    for await (const event of stream) {
+      if (event.type === 'content_block_start') {
+        if (event.content_block.type === 'text') {
+          if (isFirstOutput) {
+            process.stdout.write('\n> Claude:\n');
+            isFirstOutput = false;
+          }
+        }
+      } else if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          const delta = event.delta.text;
+          currentText += delta;
+          process.stdout.write(delta);
+        }
+      }
+    }
+
+    responseText += currentText;
+
+    // Get final message
+    const finalMessage = await stream.finalMessage();
+
+    // Track token usage
+    const usage = finalMessage.usage as unknown as {
+      input_tokens: number;
+      output_tokens: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+    totalInputTokens += usage.input_tokens;
+    totalOutputTokens += usage.output_tokens;
+    totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
+    totalCacheReadTokens += usage.cache_read_input_tokens || 0;
+
+    // Extract tool uses
+    for (const block of finalMessage.content) {
+      if (block.type === 'tool_use') {
+        toolUses.push({
+          id: block.id,
+          name: block.name,
+          input: block.input as Record<string, unknown>,
+        });
+      }
+    }
+
+    // If no tools called, we're done
+    if (toolUses.length === 0) {
+      messages = [...messages, { role: 'assistant', content: finalMessage.content }];
+      break;
+    }
+
+    // Execute tools
+    messages = [...messages, { role: 'assistant', content: finalMessage.content }];
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const tool of toolUses) {
-      if (tool.name === 'write_tickets') {
+      if (tool.name === 'read_file') {
+        const result = executeReadFile(tool.input, cwd);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tool.id,
+          content: result.content,
+        });
+      } else if (tool.name === 'list_directory') {
+        const result = executeListDirectory(tool.input, cwd);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tool.id,
+          content: result.content,
+        });
+      } else if (tool.name === 'glob_search') {
+        const result = await executeGlobSearch(tool.input, cwd);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tool.id,
+          content: result.content,
+        });
+      } else if (tool.name === 'write_tickets') {
         const result = executeWriteTickets(tool.input, ticketsPath);
         tickets = result.tickets;
         ticketsCreated = result.success;
@@ -495,80 +659,59 @@ async function processClaudeInteraction(
       }
     }
 
-    updatedMessages = [...updatedMessages, { role: 'user', content: toolResults }];
+    messages = [...messages, { role: 'user', content: toolResults }];
 
-    // Get follow-up response after tool execution
-    const followupStream = await anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8096,
-      system: systemPrompt,
-      tools: PLAN_TOOLS,
-      messages: updatedMessages,
-    });
+    // If tickets were created, get final response and stop
+    if (ticketsCreated) {
+      const followupStream = await anthropic.messages.stream({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 8096,
+        system: systemPrompt,
+        tools: PLAN_TOOLS,
+        messages,
+      });
 
-    let followupText = '';
-    for await (const event of followupStream) {
-      if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          const delta = event.delta.text;
-          followupText += delta;
-          process.stdout.write(delta);
+      let followupText = '';
+      for await (const event of followupStream) {
+        if (event.type === 'content_block_delta') {
+          if (event.delta.type === 'text_delta') {
+            const delta = event.delta.text;
+            followupText += delta;
+            process.stdout.write(delta);
+          }
         }
       }
+
+      const followupMessage = await followupStream.finalMessage();
+      responseText += '\n' + followupText;
+      messages = [...messages, { role: 'assistant', content: followupMessage.content }];
+
+      // Add followup token usage
+      const followupUsage = followupMessage.usage as unknown as {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      };
+      totalInputTokens += followupUsage.input_tokens;
+      totalOutputTokens += followupUsage.output_tokens;
+      totalCacheCreationTokens += followupUsage.cache_creation_input_tokens || 0;
+      totalCacheReadTokens += followupUsage.cache_read_input_tokens || 0;
+
+      break;
     }
-
-    const followupMessage = await followupStream.finalMessage();
-    responseText += '\n' + followupText;
-    updatedMessages = [...updatedMessages, { role: 'assistant', content: followupMessage.content }];
-
-    // Combine token usage
-    const finalUsage = finalMessage.usage as unknown as {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
-    const followupUsage = followupMessage.usage as unknown as {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
-
-    return {
-      response: responseText,
-      messages: updatedMessages,
-      inputTokens: finalUsage.input_tokens + followupUsage.input_tokens,
-      outputTokens: finalUsage.output_tokens + followupUsage.output_tokens,
-      cacheCreationTokens:
-        (finalUsage.cache_creation_input_tokens || 0) +
-        (followupUsage.cache_creation_input_tokens || 0),
-      cacheReadTokens:
-        (finalUsage.cache_read_input_tokens || 0) + (followupUsage.cache_read_input_tokens || 0),
-      tickets,
-      ticketsCreated,
-    };
-  } else {
-    updatedMessages = [...messages, { role: 'assistant', content: finalMessage.content }];
-
-    const usage = finalMessage.usage as unknown as {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
-
-    return {
-      response: responseText,
-      messages: updatedMessages,
-      inputTokens: usage.input_tokens,
-      outputTokens: usage.output_tokens,
-      cacheCreationTokens: usage.cache_creation_input_tokens || 0,
-      cacheReadTokens: usage.cache_read_input_tokens || 0,
-      tickets: [],
-      ticketsCreated: false,
-    };
   }
+
+  return {
+    response: responseText,
+    messages,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    cacheCreationTokens: totalCacheCreationTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    tickets,
+    ticketsCreated,
+  };
 }
 
 /**
@@ -594,13 +737,16 @@ async function interactivePlanSession(
   console.log(
     '💡 This tool will help you create implementation tickets from your feature/bug description.\n'
   );
-  console.log('📁 Analyzing codebase...\n');
+  console.log('🤖 Claude will explore your codebase to understand patterns and conventions.\n');
 
-  // Gather code context
-  const codeContext = gatherCodeContext(cwd);
-  const systemPrompt = buildPlanSystemPrompt(codeContext);
+  // Read CLAUDE.md and inject into system prompt
+  const claudeMdContent = readClaudeMd(cwd);
+  if (claudeMdContent) {
+    console.log(`📖 Loaded CLAUDE.md (${Math.round(claudeMdContent.length / 1000)}k chars)\n`);
+  }
 
-  console.log('✅ Codebase analyzed. Starting planning session.\n');
+  const systemPrompt = buildPlanSystemPrompt(claudeMdContent);
+
   console.log('✨ Tip: Press Enter to submit, type "exit" to quit.\n');
 
   // Set up Ctrl+C handler
@@ -620,7 +766,6 @@ async function interactivePlanSession(
 
   const session: PlanSession = {
     prompt: initialPrompt,
-    codeContext,
     messages: [],
   };
 
@@ -738,7 +883,8 @@ async function interactivePlanSession(
         '',
         session.messages,
         systemPrompt,
-        ticketsPath
+        ticketsPath,
+        cwd
       );
 
       session.messages = result.messages;
