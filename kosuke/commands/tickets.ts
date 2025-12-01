@@ -15,16 +15,22 @@
  *
  * SCAFFOLD MODE (--scaffold flag, document mode only):
  *   SCAFFOLD BATCH (template adaptation):
- *     1. SCAFFOLD-SCHEMA-1 (database infrastructure changes, auto-validated)
- *     2. SCAFFOLD-BACKEND-X (API infrastructure changes)
- *     3. SCAFFOLD-FRONTEND-X (UI infrastructure changes)
- *     4. SCAFFOLD-WEB-TEST-X (validate scaffold E2E)
+ *     1. SCAFFOLD-SCHEMA-1 (ONE ticket for ALL database infrastructure changes)
+ *     2. SCAFFOLD-BACKEND-X → SCAFFOLD-FRONTEND-X → SCAFFOLD-WEB-TEST-X (feature-by-feature)
  *
  *   LOGIC BATCH (business functionality):
- *     1. LOGIC-SCHEMA-1 (business entities, auto-validated)
- *     2. LOGIC-BACKEND-1 (business API)
- *     3. LOGIC-FRONTEND-1 (business UI)
- *     4. LOGIC-WEB-TEST-1 (validate logic E2E)
+ *     1. LOGIC-SCHEMA-1 (ONE ticket for ALL business entities)
+ *     2. LOGIC-BACKEND-X → LOGIC-FRONTEND-X → LOGIC-WEB-TEST-X (feature-by-feature)
+ *
+ * LOGIC-ONLY MODE (default):
+ *   Only generates LOGIC tickets for new features
+ *   1. LOGIC-SCHEMA-1 (ONE ticket for ALL business entities)
+ *   2. LOGIC-BACKEND-X → LOGIC-FRONTEND-X → LOGIC-WEB-TEST-X (feature-by-feature)
+ *
+ * Workflow:
+ *   1. Claude Code Agent explores codebase and generates tickets
+ *   2. Review step validates and fixes ticket structure
+ *   3. Outputs validated tickets.json
  *
  * Usage:
  *   kosuke tickets                                    # Use docs.md (no questions)
@@ -40,6 +46,14 @@ import type { Ticket, TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { planCore } from './plan.js';
+
+/**
+ * Review result structure
+ */
+interface ReviewResult {
+  validationIssues: string[];
+  fixedTickets: Ticket[];
+}
 
 /**
  * Build unified system prompt for comprehensive ticket generation
@@ -68,11 +82,18 @@ Examples of SCAFFOLD tickets:
 - "Remove landing page entirely (internal tool)"
 - "Update email templates for [brand name]"
 
-**SCAFFOLD Ticket Ordering:**
-1. SCAFFOLD-SCHEMA-1 (one ticket for all database infrastructure changes, auto-validated)
-2. SCAFFOLD-BACKEND-1, SCAFFOLD-BACKEND-2, ... (backend infrastructure tickets)
-3. SCAFFOLD-FRONTEND-1, SCAFFOLD-FRONTEND-2, ... (frontend infrastructure tickets)
-4. SCAFFOLD-WEB-TEST-1, SCAFFOLD-WEB-TEST-2, ... (E2E tests for scaffold)
+**SCAFFOLD Ticket Ordering - CRITICAL:**
+1. SCAFFOLD-SCHEMA-1 (ONE ticket for ALL database infrastructure changes, auto-validated)
+2. SCAFFOLD-BACKEND-X → SCAFFOLD-FRONTEND-X → SCAFFOLD-WEB-TEST-X (feature-by-feature)
+3. Each feature follows: backend → frontend → test pattern
+
+**SCAFFOLD Web Tests Must Validate:**
+- Authentication flow works without removed features (e.g., no org selection)
+- Navigation doesn't have broken links after removing pages
+- Landing page renders correctly with new branding
+- Signup flow works with simplified structure
+- Settings pages work without removed sections (e.g., billing removed)
+- Any customized templates (emails, landing) render correctly
 `
     : '';
 
@@ -154,25 +175,34 @@ Logic tickets should:
 - ⚙️ Build backend APIs for business features
 - 🎨 Create frontend UI for business features
 
-**LOGIC Ticket Ordering:**
-Each feature can have its own batch of tickets:
+**LOGIC Ticket Ordering - CRITICAL RULES:**
 
-Feature 1:
-1. LOGIC-SCHEMA-1 (schema for feature 1, auto-validated)
-2. LOGIC-BACKEND-1 (backend for feature 1)
-3. LOGIC-FRONTEND-1 (frontend for feature 1)
-4. LOGIC-WEB-TEST-1 (E2E test for feature 1)
+**RULE 1: ONLY ONE LOGIC-SCHEMA-1 ticket**
+- Combine ALL business entities into ONE schema ticket
+- ❌ WRONG: LOGIC-SCHEMA-1, LOGIC-SCHEMA-2, LOGIC-SCHEMA-3
+- ✅ CORRECT: LOGIC-SCHEMA-1 (all entities: properties, inquiries, favorites, etc.)
 
-Feature 2:
-5. LOGIC-BACKEND-2 (backend for feature 2, if no schema needed)
-6. LOGIC-FRONTEND-2 (frontend for feature 2)
-7. LOGIC-WEB-TEST-2 (E2E test for feature 2)
+**RULE 2: Feature-by-Feature Pattern (STRICT)**
+After schema, each feature MUST follow: backend → frontend → test
+
+Example with 2 features:
+1. LOGIC-SCHEMA-1 (ALL schemas combined)
+2. LOGIC-BACKEND-1 (feature 1 backend)
+3. LOGIC-FRONTEND-1 (feature 1 frontend)
+4. LOGIC-WEB-TEST-1 (feature 1 test)
+5. LOGIC-BACKEND-2 (feature 2 backend)
+6. LOGIC-FRONTEND-2 (feature 2 frontend)
+7. LOGIC-WEB-TEST-2 (feature 2 test)
+
+**RULE 3: Do NOT group by type**
+❌ WRONG: All backends, then all frontends, then all tests
+✅ CORRECT: Feature-by-feature (backend → frontend → test per feature)
 
 **Ticket Granularity:**
-- Schema: Usually ONE ticket per batch (scaffold or logic), automatically validated during build
+- Schema: EXACTLY ONE ticket for LOGIC batch (combines ALL entities)
 - Backend: Let complexity decide (could be 1-5 tickets per batch)
 - Frontend: Let complexity decide (could be 1-5 tickets per batch)
-- Web Tests: Let complexity decide (1 test per major user flow)
+- Web Tests: 1 test per major user flow (matches feature grouping)
 
 **Your Task:**
 1. **Explore the codebase** using read_file, grep, codebase_search to understand:
@@ -214,21 +244,75 @@ Each ticket must be a JSON object with:
 **Output Format:**
 Return ONLY a valid JSON array of ALL tickets in the correct order. No markdown, no code blocks, just raw JSON.
 
-Example:
+Example (Full Ordering Structure - Scaffold Mode):
 [
   {
     "id": "SCAFFOLD-SCHEMA-1",
     "title": "Remove organizations and simplify auth schema",
-    "description": "Remove multi-tenancy/organization features from database:\\n- Drop organization tables\\n- Remove org foreign keys from users table\\n- Simplify schema to individual users only\\n\\nAcceptance Criteria:\\n- Organization tables removed\\n- User table simplified\\n- Migrations created and validated automatically\\n- No schema errors",
+    "description": "Remove multi-tenancy/organization features from database:\\n- Drop organization tables\\n- Remove org foreign keys from users table\\n- Simplify schema to individual users only\\n\\nAcceptance Criteria:\\n- Organization tables removed\\n- User table simplified\\n- Migrations validated automatically\\n- No schema errors",
     "type": "schema",
     "estimatedEffort": 5,
     "status": "Todo",
     "category": "auth"
   },
   {
+    "id": "SCAFFOLD-BACKEND-1",
+    "title": "Remove organization tRPC routers",
+    "description": "Remove organization-related backend logic:\\n- Delete lib/trpc/routers/organizations.ts\\n- Remove from main appRouter\\n- Clean up organization schemas\\n\\nAcceptance Criteria:\\n- Organization routers removed\\n- AppRouter compiles without errors\\n- Type safety maintained",
+    "type": "backend",
+    "estimatedEffort": 4,
+    "status": "Todo",
+    "category": "auth"
+  },
+  {
+    "id": "SCAFFOLD-FRONTEND-1",
+    "title": "Remove organization pages and navigation",
+    "description": "Remove organization-related UI:\\n- Delete app/(logged-in)/org/[slug]/ directory\\n- Remove org switcher from navigation\\n- Simplify layout without org context\\n\\nAcceptance Criteria:\\n- Organization pages removed\\n- Navigation simplified\\n- No broken links",
+    "type": "frontend",
+    "estimatedEffort": 5,
+    "status": "Todo",
+    "category": "auth"
+  },
+  {
+    "id": "SCAFFOLD-WEB-TEST-1",
+    "title": "E2E: Validate simplified auth flow",
+    "description": "**Test User Credentials:**\\n- Email: john+kosuke_test@example.com\\n- OTP Code: 424242\\n\\n**Test Steps:**\\n\\n1. **Sign up without org selection**\\n   - Navigate to /sign-up\\n   - Enter email: newuser+kosuke_test@example.com\\n   - Click 'Send Code' button\\n   - Enter OTP: 424242\\n   - Click 'Verify'\\n   - Expected: Redirected directly to app (no org setup)\\n\\n2. **Verify navigation**\\n   - Expected: No org switcher visible\\n   - Expected: All navigation links work\\n\\n**Acceptance Criteria:**\\n- Auth works without org selection\\n- No broken navigation links\\n- No references to removed features",
+    "type": "test",
+    "estimatedEffort": 4,
+    "status": "Todo",
+    "category": "auth"
+  },
+  {
+    "id": "LOGIC-SCHEMA-1",
+    "title": "Create tasks schema",
+    "description": "Create database schema for tasks feature:\\n- Create taskStatusEnum: 'todo', 'in_progress', 'done'\\n- Create tasks table with userId foreign key\\n- Export inferred types\\n\\nAcceptance Criteria:\\n- Tasks table created\\n- Enums defined at database level\\n- Migrations validated automatically\\n- No schema errors",
+    "type": "schema",
+    "estimatedEffort": 4,
+    "status": "Todo",
+    "category": "tasks"
+  },
+  {
+    "id": "LOGIC-BACKEND-1",
+    "title": "Create tasks tRPC router",
+    "description": "Create backend API for tasks:\\n- Create lib/trpc/schemas/tasks.ts\\n- Create lib/trpc/routers/tasks.ts\\n- Implement CRUD operations (list, get, create, update, delete)\\n- Server-side filtering and pagination\\n\\nAcceptance Criteria:\\n- All CRUD operations work\\n- Authorization enforced\\n- Type-safe implementation",
+    "type": "backend",
+    "estimatedEffort": 6,
+    "status": "Todo",
+    "category": "tasks"
+  },
+  {
+    "id": "LOGIC-FRONTEND-1",
+    "title": "Create tasks page with list and filters",
+    "description": "Create tasks management UI:\\n- Create app/(logged-in)/tasks/page.tsx\\n- Task list with filters (status, search)\\n- Add new task button\\n- Task cards with edit/delete actions\\n\\nAcceptance Criteria:\\n- Task list displays correctly\\n- Filters work server-side\\n- CRUD operations functional\\n- Responsive design",
+    "type": "frontend",
+    "estimatedEffort": 7,
+    "status": "Todo",
+    "category": "tasks"
+  },
+  {
     "id": "LOGIC-WEB-TEST-1",
-    "title": "E2E: User creates and manages a task",
-    "description": "**Test User Credentials:**\\n- Email: john+kosuke_test@example.com\\n- OTP Code: 424242\\n\\n**Test Steps:**\\n\\n1. **Authenticate as test user**\\n   - Navigate to /sign-in\\n   - Enter email: john+kosuke_test@example.com\\n   - Click 'Send Code' button\\n   - Enter OTP: 424242\\n   - Click 'Verify' button\\n   - Expected: Redirected to /tasks dashboard\\n\\n2. **Create new task**\\n   - Click 'New Task' button\\n   - Enter title: 'Test Task'\\n   - Select priority: 'High'\\n   - Click 'Create' button\\n   - Expected: Task appears in task list\\n   - Expected: Success toast notification shown\\n\\n3. **Edit task**\\n   - Click on the created task\\n   - Change title to: 'Updated Task'\\n   - Expected: Task title updates immediately\\n\\n4. **Delete task**\\n   - Click delete icon on task\\n   - Confirm deletion in dialog\\n   - Expected: Task removed from list\\n\\n**Acceptance Criteria:**\\n- User successfully authenticates\\n- Task creation, editing, and deletion work\\n- UI provides appropriate feedback\\n- Changes persist correctly",
+    "title": "E2E: User creates and manages tasks",
+    "description": "**Test User Credentials:**\\n- Email: john+kosuke_test@example.com\\n- OTP Code: 424242\\n\\n**Test Steps:**\\n\\n1. **Sign in**\\n   - Navigate to /sign-in\\n   - Enter email: john+kosuke_test@example.com\\n   - Click 'Send Code' button\\n   - Enter OTP: 424242\\n   - Click 'Verify'\\n   - Expected: Redirected to /tasks\\n\\n2. **Create task**\\n   - Click 'New Task' button\\n   - Enter title: 'Test Task'\\n   - Select status: 'Todo'\\n   - Click 'Create'\\n   - Expected: Task appears in list\\n   - Expected: Success toast shown\\n\\n3. **Update task**\\n   - Click on task\\n   - Change status to 'Done'\\n   - Expected: Status updates immediately\\n\\n4. **Delete task**\\n   - Click delete button\\n   - Confirm in dialog\\n   - Expected: Task removed from list\\n\\n**Acceptance Criteria:**\\n- User authenticates successfully\\n- Task CRUD operations work\\n- UI provides appropriate feedback",
     "type": "test",
     "estimatedEffort": 5,
     "status": "Todo",
@@ -238,25 +322,27 @@ Example:
 
 **Critical Instructions:**
 1. Explore the project directory thoroughly before generating tickets
-2. ${isScaffoldMode ? 'For SCAFFOLD: Focus on template adaptation ONLY (remove/change/customize)' : ''}
+2. ${isScaffoldMode ? 'For SCAFFOLD: Focus on template adaptation ONLY (remove/change/customize) + MUST create SCAFFOLD-WEB-TEST tickets' : ''}
 3. For LOGIC: Focus on business features from requirements
 4. **IMPORTANT**: Read seed files (lib/db/seed.ts or src/lib/db/seed.ts) to discover test users
 5. **SCHEMA TICKETS**: No separate test tickets needed - validation happens automatically during build
-6. **WEB TESTS MUST INCLUDE**:
+6. ${isScaffoldMode ? '**SCAFFOLD-WEB-TEST TICKETS ARE MANDATORY**: Test that removed features are gone, navigation works, landing page updated, auth flow simplified' : ''}
+7. **WEB TESTS MUST INCLUDE**:
    - Test user credentials at the top
    - Clear numbered steps with natural language
    - Expected outcomes after each step
    - Specific element descriptions (button text, labels, URLs)
    - Complete user flows in one ticket (signup → create → invite = 1 ticket)
-7. Follow the exact ticket ordering structure
-8. Make descriptions detailed with clear acceptance criteria
-9. Return ONLY valid JSON - no explanations, no markdown
-10. Ensure sequential ticket IDs match the ordering structure
+8. Follow the exact ticket ordering structure
+9. Make descriptions detailed with clear acceptance criteria
+10. Return ONLY valid JSON - no explanations, no markdown
+11. Ensure sequential ticket IDs match the ordering structure
 
 Begin by:
 1. Reading seed files to discover test users
 2. Exploring the project directory structure
-3. Generating ALL tickets in the correct order with test user info in web tests.`;
+3. Generating ALL tickets in the correct order with test user info in web tests
+${isScaffoldMode ? '4. IMPORTANT: Create SCAFFOLD-WEB-TEST tickets to validate template changes work correctly' : ''}.`;
 }
 
 /**
@@ -306,6 +392,200 @@ function parseAllTickets(response: string): Ticket[] {
     console.error(`Raw response:\n${response.substring(0, 500)}...\n`);
     throw new Error(
       `Failed to parse tickets: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Build review and fix prompt for ticket validation
+ */
+function buildReviewAndFixPrompt(
+  initialTickets: Ticket[],
+  requirementsContent: string,
+  isScaffoldMode: boolean
+): string {
+  return `You are a ticket validation and correction expert.
+
+**Original Requirements:**
+${requirementsContent}
+
+**Generated Tickets to Review:**
+${JSON.stringify(initialTickets, null, 2)}
+
+**Your Task: VALIDATE AND FIX the tickets according to these STRICT RULES:**
+
+**RULE 1: ONE Schema Ticket Per Batch (CRITICAL)**
+- Each batch (SCAFFOLD, LOGIC) must have EXACTLY ONE schema ticket
+- ❌ WRONG: LOGIC-SCHEMA-1, LOGIC-SCHEMA-2, LOGIC-SCHEMA-3
+- ✅ CORRECT: LOGIC-SCHEMA-1 (combines ALL business entities in one ticket)
+- Same for SCAFFOLD-SCHEMA-1 (combines ALL infrastructure schema changes)
+
+**RULE 2: Feature-by-Feature Ordering (STRICT)**
+Each feature MUST follow this exact pattern:
+1. Backend ticket
+2. Frontend ticket
+3. Test ticket
+
+Example for 2 features:
+[
+  { "id": "LOGIC-SCHEMA-1", ... },        // ONE schema for all
+  { "id": "LOGIC-BACKEND-1", ... },       // Feature 1 backend
+  { "id": "LOGIC-FRONTEND-1", ... },      // Feature 1 frontend
+  { "id": "LOGIC-WEB-TEST-1", ... },      // Feature 1 test
+  { "id": "LOGIC-BACKEND-2", ... },       // Feature 2 backend
+  { "id": "LOGIC-FRONTEND-2", ... },      // Feature 2 frontend
+  { "id": "LOGIC-WEB-TEST-2", ... }       // Feature 2 test
+]
+
+**RULE 3: Sequential Numbering**
+- After combining schemas, renumber all tickets sequentially
+- LOGIC-BACKEND-1, LOGIC-BACKEND-2, LOGIC-BACKEND-3 (sequential)
+- LOGIC-FRONTEND-1, LOGIC-FRONTEND-2, LOGIC-FRONTEND-3 (sequential)
+- LOGIC-WEB-TEST-1, LOGIC-WEB-TEST-2, LOGIC-WEB-TEST-3 (sequential)
+
+**RULE 4: Test Tickets Must Include Credentials**
+- Every WEB-TEST ticket MUST start with test user credentials
+- Format: "**Test User Credentials:**\\n- Email: user+kosuke_test@example.com\\n- OTP Code: 424242"
+
+**AUTOMATIC FIXES TO APPLY:**
+
+1. **Combine Schema Tickets:**
+   - If multiple LOGIC-SCHEMA-X tickets exist, merge into ONE LOGIC-SCHEMA-1
+   - Combine all table definitions, enums, and types into single ticket
+   - Update description to include ALL schemas
+   - Same for SCAFFOLD-SCHEMA-X tickets
+   - Preserve all schema details from original tickets
+
+2. **Reorder Tickets by Feature:**
+   - Group related backend/frontend/test tickets together
+   - Enforce: backend → frontend → test pattern for each feature
+   - Do NOT group all backends, then all frontends, then all tests
+   - Each feature is a cohesive unit (backend + frontend + test)
+
+3. **Renumber Ticket IDs:**
+   - After combining/reordering, ensure sequential IDs
+   - Update ticket IDs to match new order
+   - Example: If LOGIC-BACKEND-3 becomes first backend, rename to LOGIC-BACKEND-1
+
+4. **Validate Test User Info:**
+   - Ensure all WEB-TEST tickets have credentials at top of description
+   - If missing, add placeholder credentials
+
+**ORDERING EXAMPLES:**
+
+${
+  isScaffoldMode
+    ? `**Scaffold Mode (with both SCAFFOLD and LOGIC):**
+[
+  // SCAFFOLD batch
+  { "id": "SCAFFOLD-SCHEMA-1" },      // ONE schema for all infrastructure
+  { "id": "SCAFFOLD-BACKEND-1" },     // Infrastructure feature 1 backend
+  { "id": "SCAFFOLD-FRONTEND-1" },    // Infrastructure feature 1 frontend
+  { "id": "SCAFFOLD-WEB-TEST-1" },    // Infrastructure feature 1 test
+  { "id": "SCAFFOLD-BACKEND-2" },     // Infrastructure feature 2 backend
+  { "id": "SCAFFOLD-FRONTEND-2" },    // Infrastructure feature 2 frontend
+
+  // LOGIC batch
+  { "id": "LOGIC-SCHEMA-1" },         // ONE schema for all business
+  { "id": "LOGIC-BACKEND-1" },        // Business feature 1 backend
+  { "id": "LOGIC-FRONTEND-1" },       // Business feature 1 frontend
+  { "id": "LOGIC-WEB-TEST-1" },       // Business feature 1 test
+  { "id": "LOGIC-BACKEND-2" },        // Business feature 2 backend
+  { "id": "LOGIC-FRONTEND-2" },       // Business feature 2 frontend
+  { "id": "LOGIC-WEB-TEST-2" }        // Business feature 2 test
+]`
+    : `**Logic-Only Mode:**
+[
+  { "id": "LOGIC-SCHEMA-1" },         // ONE schema for all business
+  { "id": "LOGIC-BACKEND-1" },        // Feature 1 backend
+  { "id": "LOGIC-FRONTEND-1" },       // Feature 1 frontend
+  { "id": "LOGIC-WEB-TEST-1" },       // Feature 1 test
+  { "id": "LOGIC-BACKEND-2" },        // Feature 2 backend
+  { "id": "LOGIC-FRONTEND-2" },       // Feature 2 frontend
+  { "id": "LOGIC-WEB-TEST-2" }        // Feature 2 test
+]`
+}
+
+**OUTPUT FORMAT:**
+Return ONLY a valid JSON object with this exact structure:
+{
+  "validationIssues": [
+    "Issue 1 found and fixed",
+    "Issue 2 found and fixed"
+  ],
+  "fixedTickets": [
+    { /* all ticket objects in corrected order */ }
+  ]
+}
+
+**CRITICAL INSTRUCTIONS:**
+- Return ONLY valid JSON (no markdown, no code blocks, no explanations)
+- fixedTickets array must contain ALL tickets (not just changed ones)
+- Preserve all ticket content (descriptions, acceptance criteria, effort, category)
+- Only fix structure, ordering, and numbering issues
+- If no issues found, return empty validationIssues array with original tickets
+- Ensure sequential numbering matches the new order
+
+Begin validation and fixing now.`;
+}
+
+/**
+ * Review and fix tickets with Claude
+ */
+async function reviewAndFixTickets(
+  initialTickets: Ticket[],
+  requirementsContent: string,
+  isScaffoldMode: boolean,
+  projectPath: string
+): Promise<ReviewResult> {
+  console.log(`\n${'='.repeat(80)}`);
+  console.log('🔍 Reviewing and Validating Tickets');
+  console.log(`${'='.repeat(80)}\n`);
+
+  const reviewPrompt = buildReviewAndFixPrompt(initialTickets, requirementsContent, isScaffoldMode);
+
+  const reviewResult = await runAgent('Review and fix generated tickets', {
+    systemPrompt: reviewPrompt,
+    maxTurns: 20,
+    verbosity: 'minimal',
+    cwd: projectPath,
+  });
+
+  try {
+    // Parse review result
+    const jsonMatch = reviewResult.response.match(/\{[\s\S]*"fixedTickets"[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No valid review result found in response');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as ReviewResult;
+
+    if (!parsed.fixedTickets || !Array.isArray(parsed.fixedTickets)) {
+      throw new Error('Invalid review result: fixedTickets must be an array');
+    }
+
+    // Validate fixed tickets
+    const validTypes = ['schema', 'backend', 'frontend', 'test'];
+    for (const ticket of parsed.fixedTickets) {
+      if (!ticket.id || !ticket.title || !ticket.description || !ticket.type) {
+        throw new Error(`Invalid ticket structure in review result: ${JSON.stringify(ticket)}`);
+      }
+      if (!validTypes.includes(ticket.type)) {
+        throw new Error(`Invalid type in reviewed ticket ${ticket.id}: ${ticket.type}`);
+      }
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error('\n❌ Review step failed to parse or validate tickets');
+    console.error('Error:', error);
+    console.error(
+      '\nReview response (first 1000 chars):',
+      reviewResult.response.substring(0, 1000)
+    );
+    throw new Error(
+      `Ticket review and validation failed. Please check the review prompt and try again.\n` +
+        `Error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }
@@ -444,10 +724,34 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     captureConversation: true,
   });
 
-  // 5. Parse all tickets from single response
-  const allTickets = parseAllTickets(agentResult.response);
+  // 5. Parse initial tickets
+  const initialTickets = parseAllTickets(agentResult.response);
+  console.log(`\n✅ Initial generation: ${initialTickets.length} tickets created`);
 
-  // 6. Display tickets by batch (scaffold vs logic based on ID) and by type
+  // 6. Review and fix tickets
+  const reviewResult = await reviewAndFixTickets(
+    initialTickets,
+    requirementsContent,
+    isScaffoldMode,
+    projectPath
+  );
+
+  // Display what was fixed
+  if (reviewResult.validationIssues.length > 0) {
+    console.log(`\n${'='.repeat(80)}`);
+    console.log('🔧 Validation Issues Found and Fixed:');
+    console.log(`${'='.repeat(80)}`);
+    reviewResult.validationIssues.forEach((issue, idx) => {
+      console.log(`   ${idx + 1}. ${issue}`);
+    });
+    console.log();
+  } else {
+    console.log('\n✅ No validation issues found - tickets are correctly structured\n');
+  }
+
+  const allTickets = reviewResult.fixedTickets;
+
+  // 8. Display tickets by batch (scaffold vs logic based on ID) and by type
   const scaffoldTickets = allTickets.filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-'));
   const logicTickets = allTickets.filter((t) => t.id.toUpperCase().startsWith('LOGIC-'));
   const testTickets = allTickets.filter((t) => t.type === 'test');
@@ -457,13 +761,14 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     console.log('🏗️  SCAFFOLD Tickets (Template Adaptation)');
     console.log(`${'='.repeat(60)}`);
     scaffoldTickets.forEach((ticket) => {
-      const emoji = ticket.id.includes('SCHEMA')
-        ? '🗄️'
-        : ticket.id.includes('BACKEND')
-          ? '⚙️'
-          : ticket.id.includes('FRONTEND')
-            ? '🎨'
-            : '🌐';
+      const emoji =
+        ticket.type === 'schema'
+          ? '🗄️'
+          : ticket.type === 'backend'
+            ? '⚙️'
+            : ticket.type === 'frontend'
+              ? '🎨'
+              : '🌐'; // test type
       console.log(
         `   ${emoji} ${ticket.id}: ${ticket.title} (Effort: ${ticket.estimatedEffort}/10${ticket.category ? `, Category: ${ticket.category}` : ''})`
       );
@@ -475,11 +780,14 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     console.log('💡 LOGIC Tickets (Business Functionality)');
     console.log(`${'='.repeat(60)}`);
     logicTickets.forEach((ticket) => {
-      const emoji = ticket.id.includes('SCHEMA')
-        ? '🗄️'
-        : ticket.id.includes('BACKEND')
-          ? '⚙️'
-          : '🎨';
+      const emoji =
+        ticket.type === 'schema'
+          ? '🗄️'
+          : ticket.type === 'backend'
+            ? '⚙️'
+            : ticket.type === 'frontend'
+              ? '🎨'
+              : '🌐'; // test type
       console.log(
         `   ${emoji} ${ticket.id}: ${ticket.title} (Effort: ${ticket.estimatedEffort}/10${ticket.category ? `, Category: ${ticket.category}` : ''})`
       );
@@ -495,11 +803,11 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     });
   }
 
-  // 7. Write tickets to file
+  // 9. Write tickets to file
   writeTicketsToFile(outputPath, allTickets);
   console.log(`\n💾 Tickets saved to: ${outputPath}`);
 
-  // 8. Separate tickets by phase for compatibility with existing result structure
+  // 10. Separate tickets by phase for compatibility with existing result structure
   const schemaTickets = allTickets.filter((t) => t.type === 'schema');
   const backendTickets = allTickets.filter((t) => t.type === 'backend');
   const frontendTickets = allTickets.filter((t) => t.type === 'frontend');
