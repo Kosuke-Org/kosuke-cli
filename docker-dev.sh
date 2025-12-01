@@ -6,8 +6,44 @@
 # - Connection to kosuke_network
 # - Current directory mounted for live development
 # - Environment variables from .env file
+# - Memory limits to prevent host system freeze
+#
+# Usage:
+#   ./docker-dev.sh                    # Default 6GB memory limit
+#   ./docker-dev.sh --memory=8g        # Custom memory limit
+#   ./docker-dev.sh --memory=4g        # Lower limit for constrained systems
 
 set -e
+
+# Default memory limit (prevents container from freezing host)
+MEMORY_LIMIT="6g"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --memory=*)
+      MEMORY_LIMIT="${1#*=}"
+      shift
+      ;;
+    --help|-h)
+      echo "Usage: ./docker-dev.sh [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --memory=SIZE    Set container memory limit (default: 6g)"
+      echo "                   Examples: --memory=4g, --memory=8g"
+      echo "  --help, -h       Show this help message"
+      echo ""
+      echo "The memory limit prevents the container from consuming all host RAM"
+      echo "and freezing your system during long-running operations like 'kosuke build'."
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
+done
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -15,7 +51,8 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}🐋 Kosuke CLI - Docker Development Environment${NC}\n"
+echo -e "${BLUE}🐋 Kosuke CLI - Docker Development Environment${NC}"
+echo -e "${BLUE}📊 Memory limit: ${MEMORY_LIMIT}${NC}\n"
 
 # Check if .env file exists
 if [ ! -f .env ]; then
@@ -42,6 +79,8 @@ echo -e "${BLUE}📦 Installing dependencies (if needed)...${NC}\n"
 docker run -it --rm \
   --name kosuke-cli-dev \
   --network kosuke_network \
+  --memory="${MEMORY_LIMIT}" \
+  --memory-swap="${MEMORY_LIMIT}" \
   -v "$(pwd):/workspace" \
   --env-file .env \
   kosuke-cli:dev \
@@ -78,6 +117,7 @@ docker run -it --rm \
     echo "  kosuke analyse"
     echo "  kosuke lint"
     echo "  kosuke requirements"
+    echo "  kosuke plan"
     echo "  kosuke getcode \"query\""
     echo ""
     echo "Development:"
