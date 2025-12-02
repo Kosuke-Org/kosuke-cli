@@ -396,7 +396,6 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     const planResult = await planCore({
       prompt: options.prompt,
       directory: projectPath,
-      output: options.output || 'tickets.json',
       noTest: options.noTest,
       noLogs: options.noLogs,
     });

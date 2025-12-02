@@ -18,7 +18,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { glob } from 'glob';
 import type { PlanOptions, Ticket } from '../types.js';
@@ -26,6 +26,28 @@ import { calculateCost } from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { processAndWriteTickets, sortTicketsByOrder } from '../utils/tickets-manager.js';
+
+/**
+ * Generate timestamp-based tickets path in tickets/ folder
+ * Creates the tickets/ folder if it doesn't exist
+ */
+function generateTicketsPath(cwd: string): string {
+  const ticketsDir = join(cwd, 'tickets');
+
+  // Create tickets folder if it doesn't exist
+  if (!existsSync(ticketsDir)) {
+    mkdirSync(ticketsDir, { recursive: true });
+  }
+
+  // Generate timestamp: YYYY-MM-DD-HH-mm-ss
+  const now = new Date();
+  const timestamp = now
+    .toISOString()
+    .replace(/[T:]/g, '-')
+    .replace(/\.\d{3}Z$/, '');
+
+  return join(ticketsDir, `${timestamp}.ticket.json`);
+}
 
 /**
  * Result from programmatic plan execution
@@ -853,8 +875,9 @@ async function interactivePlanSession(
         console.log('═'.repeat(90));
         console.log('\n🎉 Planning complete!\n');
         console.log('💡 Next steps:');
-        console.log('   - Review tickets: cat ' + ticketsPath);
+        console.log('   - Review tickets: cat "' + ticketsPath + '"');
         console.log('   - Build tickets: kosuke build --directory=' + cwd);
+        console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
         continueConversation = false;
         break;
       }
@@ -913,7 +936,7 @@ async function interactivePlanSession(
  * Core plan function for programmatic use
  */
 export async function planCore(options: PlanOptions): Promise<PlanResult> {
-  const { prompt, directory, output = 'tickets.json', noTest = false } = options;
+  const { prompt, directory, noTest = false } = options;
 
   // Validate directory
   const cwd = directory ? resolve(directory) : process.cwd();
@@ -941,7 +964,7 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
     };
   }
 
-  const ticketsPath = join(cwd, output);
+  const ticketsPath = generateTicketsPath(cwd);
 
   try {
     const result = await interactivePlanSession(prompt, cwd, ticketsPath, undefined, noTest);
@@ -1001,7 +1024,7 @@ export async function planCommand(options: PlanOptions): Promise<void> {
 
     console.log(`📁 Using project directory: ${cwd}\n`);
 
-    const ticketsPath = join(cwd, options.output || 'tickets.json');
+    const ticketsPath = generateTicketsPath(cwd);
 
     // Run interactive session
     const sessionData = await interactivePlanSession(
