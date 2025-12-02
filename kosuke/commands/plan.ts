@@ -541,8 +541,7 @@ function formatTokenUsage(
  * Handles multiple tool calls in a loop until Claude stops calling tools
  */
 async function processClaudeInteraction(
-  userInput: string,
-  previousMessages: Anthropic.MessageParam[],
+  messages: Anthropic.MessageParam[],
   systemPrompt: string,
   cwd: string
 ): Promise<{
@@ -558,11 +557,6 @@ async function processClaudeInteraction(
   const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
-
-  // Build message history
-  let messages: Anthropic.MessageParam[] = userInput
-    ? [...previousMessages, { role: 'user', content: userInput }]
-    : previousMessages;
 
   let responseText = '';
   let tickets: Ticket[] = [];
@@ -903,7 +897,7 @@ async function interactivePlanSession(
     while (continueConversation) {
       console.log('\n🤔 Claude is analyzing...\n');
 
-      const result = await processClaudeInteraction('', session.messages, systemPrompt, cwd);
+      const result = await processClaudeInteraction(session.messages, systemPrompt, cwd);
 
       session.messages = result.messages;
 
