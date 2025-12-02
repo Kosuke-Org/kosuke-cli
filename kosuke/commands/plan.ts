@@ -14,6 +14,7 @@
  * Usage:
  *   kosuke plan --prompt="Add dark mode toggle" --directory=./my-project
  *   kosuke plan --prompt="Fix login timeout bug" --dir=./app
+ *   kosuke plan --prompt="Add notes feature" --no-test  # Skip WEB-TEST tickets
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -167,8 +168,10 @@ function readClaudeMd(cwd: string): string | null {
 
 /**
  * Build system prompt for plan command
+ * @param claudeMdContent - Content of CLAUDE.md file if it exists
+ * @param noTest - If true, exclude WEB-TEST tickets from generation
  */
-function buildPlanSystemPrompt(claudeMdContent: string | null): string {
+function buildPlanSystemPrompt(claudeMdContent: string | null, noTest: boolean = false): string {
   const claudeSection = claudeMdContent
     ? `
 
@@ -225,14 +228,22 @@ For each question, provide BOTH the question AND a recommended approach:
 **Ticket Types & Prefixes:**
 - \`SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
 - \`BACKEND-N\`: API/server-side logic (tRPC, server actions)
-- \`FRONTEND-N\`: UI components and pages (React, Next.js)
-- \`WEB-TEST-N\`: E2E tests (Playwright, browser testing)
+- \`FRONTEND-N\`: UI components and pages (React, Next.js)${
+    noTest
+      ? ''
+      : `
+- \`WEB-TEST-N\`: E2E tests (Playwright, browser testing)`
+  }
 
 **Ticket Order (build system processes in this order):**
 1. SCHEMA tickets first (database changes)
 2. BACKEND tickets (API layer)
-3. FRONTEND tickets (UI layer)
-4. WEB-TEST tickets last (validate everything works)
+3. FRONTEND tickets (UI layer)${
+    noTest
+      ? ''
+      : `
+4. WEB-TEST tickets last (validate everything works)`
+  }
 
 **CRITICAL RULES:**
 - Questions must be NON-TECHNICAL and USER-FOCUSED
@@ -721,7 +732,8 @@ async function interactivePlanSession(
   initialPrompt: string,
   cwd: string,
   ticketsPath: string,
-  logContext?: ReturnType<typeof logger.createContext>
+  logContext?: ReturnType<typeof logger.createContext>,
+  noTest: boolean = false
 ): Promise<{
   messages: Anthropic.MessageParam[];
   tickets: Ticket[];
@@ -745,7 +757,7 @@ async function interactivePlanSession(
     console.log(`📖 Loaded CLAUDE.md (${Math.round(claudeMdContent.length / 1000)}k chars)\n`);
   }
 
-  const systemPrompt = buildPlanSystemPrompt(claudeMdContent);
+  const systemPrompt = buildPlanSystemPrompt(claudeMdContent, noTest);
 
   console.log('✨ Tip: Press Enter to submit, type "exit" to quit.\n');
 
@@ -994,7 +1006,7 @@ async function interactivePlanSession(
  * Core plan function for programmatic use
  */
 export async function planCore(options: PlanOptions): Promise<PlanResult> {
-  const { prompt, directory, output = 'tickets.json' } = options;
+  const { prompt, directory, output = 'tickets.json', noTest = false } = options;
 
   // Validate directory
   const cwd = directory ? resolve(directory) : process.cwd();
@@ -1025,7 +1037,7 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
   const ticketsPath = join(cwd, output);
 
   try {
-    const result = await interactivePlanSession(prompt, cwd, ticketsPath);
+    const result = await interactivePlanSession(prompt, cwd, ticketsPath, undefined, noTest);
 
     return {
       success: result.tickets.length > 0,
@@ -1085,7 +1097,13 @@ export async function planCommand(options: PlanOptions): Promise<void> {
     const ticketsPath = join(cwd, options.output || 'tickets.json');
 
     // Run interactive session
-    const sessionData = await interactivePlanSession(options.prompt, cwd, ticketsPath, logContext);
+    const sessionData = await interactivePlanSession(
+      options.prompt,
+      cwd,
+      ticketsPath,
+      logContext,
+      options.noTest ?? false
+    );
 
     // Track metrics
     logger.trackTokens(logContext, sessionData.tokensUsed);

@@ -92,6 +92,7 @@ export interface TicketsOptions {
   directory?: string; // Directory for Claude to explore (default: cwd)
   scaffold?: boolean; // Enable scaffold mode (template adaptation + business logic)
   prompt?: string; // Inline requirements (alternative to --path)
+  noTest?: boolean; // Skip WEB-TEST ticket creation
   noLogs?: boolean;
 }
 
@@ -258,6 +259,7 @@ export interface PlanOptions {
   prompt: string; // Feature or bug description
   directory?: string; // Directory with existing code (default: cwd)
   output?: string; // Output file for tickets (default: tickets.json)
+  noTest?: boolean; // Skip WEB-TEST ticket creation
   noLogs?: boolean;
 }
 

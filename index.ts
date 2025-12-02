@@ -106,6 +106,7 @@ async function main() {
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
+          noTest: args.includes('--no-test'),
           noLogs: args.includes('--no-logs'),
         };
 
@@ -116,6 +117,7 @@ async function main() {
           console.log('  --prompt="..."       Feature or bug description (required)');
           console.log('  --directory=PATH     Directory with existing code (default: cwd)');
           console.log('  --output=FILE        Output file for tickets (default: tickets.json)');
+          console.log('  --no-test            Skip WEB-TEST ticket creation');
           console.log('\nExamples:');
           console.log('  kosuke plan --prompt="Add dark mode toggle"');
           console.log('  kosuke plan --prompt="Fix login timeout bug" --directory=./my-app');
@@ -144,6 +146,7 @@ async function main() {
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           scaffold: args.includes('--scaffold'),
           prompt: args.find((arg) => arg.startsWith('--prompt='))?.split('=')[1],
+          noTest: args.includes('--no-test'),
           noLogs: args.includes('--no-logs'),
         };
         await ticketsCommand(options);

@@ -61,7 +61,8 @@ interface ReviewResult {
 function buildTicketPrompt(
   requirementsContent: string,
   projectPath: string,
-  isScaffoldMode: boolean
+  isScaffoldMode: boolean,
+  noTest: boolean = false
 ): string {
   const scaffoldGuidance = isScaffoldMode
     ? `
@@ -97,7 +98,9 @@ Examples of SCAFFOLD tickets:
 `
     : '';
 
-  const webTestGuidance = `
+  const webTestGuidance = noTest
+    ? ''
+    : `
 **WEB TEST TICKETS - Stagehand Agent E2E Tests:**
 
 Web test tickets are executed by Stagehand agent and must follow these guidelines:
@@ -652,6 +655,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
       prompt: options.prompt,
       directory: projectPath,
       output: options.output || 'tickets.json',
+      noTest: options.noTest,
       noLogs: options.noLogs,
     });
 
@@ -714,7 +718,12 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
   console.log('🎯 Generating Tickets with Claude Code Agent');
   console.log(`${'='.repeat(80)}\n`);
 
-  const systemPrompt = buildTicketPrompt(requirementsContent, projectPath, isScaffoldMode);
+  const systemPrompt = buildTicketPrompt(
+    requirementsContent,
+    projectPath,
+    isScaffoldMode,
+    options.noTest ?? false
+  );
 
   const agentResult = await runAgent('Generate all tickets from requirements', {
     systemPrompt,
