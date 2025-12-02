@@ -18,13 +18,14 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { glob } from 'glob';
 import * as readline from 'readline';
 import type { PlanOptions, Ticket } from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
+import { processAndWriteTickets, sortTicketsByOrder } from '../utils/ticket-writer.js';
 
 /**
  * Result from programmatic plan execution
@@ -116,7 +117,7 @@ const PLAN_TOOLS: Anthropic.Tool[] = [
               id: {
                 type: 'string',
                 description:
-                  'Ticket ID with prefix: SCHEMA- for database, BACKEND- for API, FRONTEND- for UI, WEB-TEST- for E2E tests',
+                  'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests',
               },
               title: {
                 type: 'string',
@@ -226,23 +227,57 @@ For each question, provide BOTH the question AND a recommended approach:
 4. **Generate Tickets**: Once requirements are clear, use \`write_tickets\` tool to create tickets:
 
 **Ticket Types & Prefixes:**
-- \`SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
-- \`BACKEND-N\`: API/server-side logic (tRPC, server actions)
-- \`FRONTEND-N\`: UI components and pages (React, Next.js)${
+- \`PLAN-SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
+- \`PLAN-BACKEND-N\`: API/server-side logic (tRPC, server actions)
+- \`PLAN-FRONTEND-N\`: UI components and pages (React, Next.js)${
     noTest
       ? ''
       : `
-- \`WEB-TEST-N\`: E2E tests (Playwright, browser testing)`
+- \`PLAN-WEB-TEST-N\`: E2E tests (Playwright, browser testing)`
   }
 
 **Ticket Order (build system processes in this order):**
-1. SCHEMA tickets first (database changes)
-2. BACKEND tickets (API layer)
-3. FRONTEND tickets (UI layer)${
+1. PLAN-SCHEMA tickets first (database changes)
+2. PLAN-BACKEND tickets (API layer)
+3. PLAN-FRONTEND tickets (UI layer)${
     noTest
       ? ''
       : `
-4. WEB-TEST tickets last (validate everything works)`
+4. PLAN-WEB-TEST tickets last (validate everything works)
+
+**WEB TEST TICKETS - Stagehand Agent E2E Tests:**
+
+Web test tickets are executed by Stagehand agent. Follow these guidelines:
+
+**Test User Discovery:**
+- Read seed files (lib/db/seed.ts or src/lib/db/seed.ts) to find test users
+- Pattern: Any email ending with "+kosuke_test@example.com" uses OTP code "424242"
+- Example: john+kosuke_test@example.com → OTP: 424242
+
+**Each Web Test Ticket MUST Include:**
+1. **Test User Credentials** (at the top)
+   - Email addresses of test users
+   - OTP code: 424242
+   - User roles if applicable
+
+2. **Test Steps** (numbered, detailed natural language)
+   - Navigation: "Navigate to /sign-in"
+   - Interactions: "Click button labeled 'New Task'"
+   - Inputs: "Enter 'Test Task' in title field"
+   - Expected outcomes: "Expected: Task appears in list"
+   - Use CLEAR element descriptions (button text, labels)
+
+3. **Acceptance Criteria**
+   - Final expected state
+   - Data validation points
+
+**Authentication Steps Template:**
+1. Navigate to /sign-in
+2. Enter email: {test_user}+kosuke_test@example.com
+3. Click "Send Code" button
+4. Enter OTP: 424242
+5. Click "Verify" button
+6. Expected: Redirected to main app`
   }
 
 **CRITICAL RULES:**
@@ -273,22 +308,41 @@ For each question, provide BOTH the question AND a recommended approach:
 - "Should completed tasks be archived or permanently deleted?"
 - "Who should be able to see this - everyone or just certain people?"
 
-**Example Ticket Description:**
-\`\`\`
-Implement dark mode toggle in the settings page.
-
-**Acceptance Criteria:**
-- Toggle appears in user settings
-- Preference persists across sessions
-- All pages respect the theme setting
-- Smooth transition animation
-
-**Technical Notes (from codebase analysis):**
-- Use existing ThemeProvider at app/providers.tsx
-- Follow button patterns from components/ui/button.tsx
-- Store preference in user settings table (lib/db/schema/users.ts)
-- Use CSS variables for theming (see globals.css)
-\`\`\``;
+**Example Tickets (Full JSON):**
+[
+  {
+    "id": "PLAN-SCHEMA-1",
+    "title": "Create tasks schema",
+    "description": "Create database schema for tasks feature:\\n- Create taskStatusEnum: 'todo', 'in_progress', 'done'\\n- Create tasks table with userId foreign key\\n- Export inferred types\\n\\n**Acceptance Criteria:**\\n- Tasks table created\\n- Enums defined at database level\\n- Migrations generated\\n\\n**Technical Notes:**\\n- Follow existing schema patterns in lib/db/schema/\\n- Use Drizzle ORM conventions",
+    "type": "schema",
+    "estimatedEffort": 4,
+    "category": "tasks"
+  },
+  {
+    "id": "PLAN-BACKEND-1",
+    "title": "Create tasks tRPC router",
+    "description": "Create backend API for tasks:\\n- Create lib/trpc/routers/tasks.ts\\n- Implement CRUD operations (list, create, update, delete)\\n- Server-side filtering by status\\n\\n**Acceptance Criteria:**\\n- All CRUD operations work\\n- Authorization enforced\\n- Type-safe implementation",
+    "type": "backend",
+    "estimatedEffort": 5,
+    "category": "tasks"
+  },
+  {
+    "id": "PLAN-FRONTEND-1",
+    "title": "Create tasks page with list and filters",
+    "description": "Create tasks management UI:\\n- Create app/(logged-in)/tasks/page.tsx\\n- Task list with status filters\\n- Add new task dialog\\n- Edit/delete actions\\n\\n**Acceptance Criteria:**\\n- Task list displays correctly\\n- Filters work\\n- CRUD operations functional\\n- Responsive design\\n\\n**Technical Notes:**\\n- Use existing UI components from components/ui/\\n- Follow page patterns from existing routes",
+    "type": "frontend",
+    "estimatedEffort": 6,
+    "category": "tasks"
+  },
+  {
+    "id": "PLAN-WEB-TEST-1",
+    "title": "E2E: User creates and manages tasks",
+    "description": "**Test User Credentials:**\\n- Email: john+kosuke_test@example.com\\n- OTP Code: 424242\\n\\n**Test Steps:**\\n\\n1. **Sign in**\\n   - Navigate to /sign-in\\n   - Enter email: john+kosuke_test@example.com\\n   - Click 'Send Code' button\\n   - Enter OTP: 424242\\n   - Click 'Verify'\\n   - Expected: Redirected to /tasks\\n\\n2. **Create task**\\n   - Click 'New Task' button\\n   - Enter title: 'Test Task'\\n   - Click 'Create'\\n   - Expected: Task appears in list\\n\\n3. **Delete task**\\n   - Click delete button on task\\n   - Confirm deletion\\n   - Expected: Task removed\\n\\n**Acceptance Criteria:**\\n- User authenticates successfully\\n- Task CRUD operations work\\n- UI provides feedback",
+    "type": "test",
+    "estimatedEffort": 4,
+    "category": "tasks"
+  }
+]`;
 }
 
 /**
@@ -413,11 +467,13 @@ async function executeGlobSearch(
 
 /**
  * Execute write_tickets tool
+ * Returns parsed tickets for later validation - does NOT write to file
  */
-function executeWriteTickets(
-  toolInput: Record<string, unknown>,
-  ticketsPath: string
-): { success: boolean; message: string; tickets: Ticket[] } {
+function executeWriteTickets(toolInput: Record<string, unknown>): {
+  success: boolean;
+  message: string;
+  tickets: Ticket[];
+} {
   try {
     const inputTickets = toolInput.tickets as Array<{
       id: string;
@@ -439,62 +495,19 @@ function executeWriteTickets(
       category: t.category,
     }));
 
-    // Sort tickets by processing order
-    tickets.sort((a, b) => {
-      const getPhaseOrder = (id: string): number => {
-        if (id.startsWith('SCHEMA-')) return 1;
-        if (id.startsWith('DB-TEST-')) return 2;
-        if (id.startsWith('BACKEND-')) return 3;
-        if (id.startsWith('FRONTEND-')) return 4;
-        if (id.startsWith('WEB-TEST-')) return 5;
-        return 6;
-      };
-      return getPhaseOrder(a.id) - getPhaseOrder(b.id);
-    });
+    // Sort tickets by processing order (using shared utility)
+    const sortedTickets = sortTicketsByOrder(tickets);
 
-    // Display tickets being created
-    console.log(`\n${'='.repeat(70)}`);
-    console.log('📋 Creating Implementation Tickets');
-    console.log(`${'='.repeat(70)}\n`);
-
-    for (const ticket of tickets) {
-      const emoji =
-        ticket.type === 'schema'
-          ? '🗄️'
-          : ticket.type === 'backend'
-            ? '⚙️'
-            : ticket.type === 'frontend'
-              ? '🎨'
-              : '🧪';
-      console.log(`${emoji} ${ticket.id}: ${ticket.title}`);
-      console.log(`   Type: ${ticket.type} | Effort: ${ticket.estimatedEffort}/10`);
-      if (ticket.category) {
-        console.log(`   Category: ${ticket.category}`);
-      }
-      console.log('');
-    }
-
-    // Create tickets file
-    const ticketsFile = {
-      generatedAt: new Date().toISOString(),
-      totalTickets: tickets.length,
-      tickets,
-    };
-
-    writeFileSync(ticketsPath, JSON.stringify(ticketsFile, null, 2), 'utf-8');
-
-    console.log(`${'='.repeat(70)}`);
-    console.log(`✅ Created ${tickets.length} ticket(s) → ${ticketsPath}`);
-    console.log(`${'='.repeat(70)}\n`);
+    console.log(`\n📋 Generated ${sortedTickets.length} ticket(s) - validating...`);
 
     return {
       success: true,
-      message: `Successfully created ${tickets.length} tickets`,
-      tickets,
+      message: `Generated ${sortedTickets.length} tickets - will validate and save after confirmation`,
+      tickets: sortedTickets,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`\n❌ Failed to write tickets: ${errorMessage}`);
+    console.error(`\n❌ Failed to parse tickets: ${errorMessage}`);
     return {
       success: false,
       message: `Error: ${errorMessage}`,
@@ -531,7 +544,6 @@ async function processClaudeInteraction(
   userInput: string,
   previousMessages: Anthropic.MessageParam[],
   systemPrompt: string,
-  ticketsPath: string,
   cwd: string
 ): Promise<{
   response: string;
@@ -659,7 +671,7 @@ async function processClaudeInteraction(
           content: result.content,
         });
       } else if (tool.name === 'write_tickets') {
-        const result = executeWriteTickets(tool.input, ticketsPath);
+        const result = executeWriteTickets(tool.input);
         tickets = result.tickets;
         ticketsCreated = result.success;
         toolResults.push({
@@ -891,13 +903,7 @@ async function interactivePlanSession(
     while (continueConversation) {
       console.log('\n🤔 Claude is analyzing...\n');
 
-      const result = await processClaudeInteraction(
-        '',
-        session.messages,
-        systemPrompt,
-        ticketsPath,
-        cwd
-      );
+      const result = await processClaudeInteraction('', session.messages, systemPrompt, cwd);
 
       session.messages = result.messages;
 
@@ -929,9 +935,16 @@ async function interactivePlanSession(
 
       // Check if tickets were created
       if (result.ticketsCreated) {
-        finalTickets = result.tickets;
-        console.log('\n✅ Tickets created: ' + ticketsPath);
-        console.log('\n' + '═'.repeat(90));
+        // Validate and write tickets using shared utility
+        const { tickets: validatedTickets } = await processAndWriteTickets(
+          result.tickets,
+          ticketsPath,
+          cwd,
+          { displaySummary: true }
+        );
+        finalTickets = validatedTickets;
+
+        console.log('═'.repeat(90));
         console.log('📊 Total Session Cost:');
         console.log(
           formatTokenUsage(

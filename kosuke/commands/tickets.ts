@@ -40,20 +40,13 @@
  *   kosuke tickets --prompt="Fix login bug" --dir=./  # Interactive with questions
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { join, resolve } from 'path';
-import type { Ticket, TicketsOptions, TicketsResult } from '../types.js';
+import type { TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
+import { parseTickets, processAndWriteTickets } from '../utils/ticket-writer.js';
 import { planCore } from './plan.js';
-
-/**
- * Review result structure
- */
-interface ReviewResult {
-  validationIssues: string[];
-  fixedTickets: Ticket[];
-}
 
 /**
  * Build unified system prompt for comprehensive ticket generation
@@ -349,264 +342,6 @@ ${isScaffoldMode ? '4. IMPORTANT: Create SCAFFOLD-WEB-TEST tickets to validate t
 }
 
 /**
- * Parse all tickets from Claude's response
- */
-function parseAllTickets(response: string): Ticket[] {
-  try {
-    // Extract JSON from response (in case Claude includes extra text)
-    const jsonMatch = response.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      throw new Error('No JSON array found in response');
-    }
-
-    const tickets = JSON.parse(jsonMatch[0]) as Ticket[];
-
-    // Validate tickets
-    if (!Array.isArray(tickets)) {
-      throw new Error(`Expected array of tickets, got ${typeof tickets}`);
-    }
-
-    const validTypes = ['schema', 'backend', 'frontend', 'test'];
-
-    for (const ticket of tickets) {
-      if (!ticket.id || !ticket.title || !ticket.description) {
-        throw new Error(`Invalid ticket structure: ${JSON.stringify(ticket)}`);
-      }
-      if (!ticket.type || !validTypes.includes(ticket.type)) {
-        throw new Error(`Invalid or missing type for ticket ${ticket.id}: ${ticket.type}`);
-      }
-      if (
-        typeof ticket.estimatedEffort !== 'number' ||
-        ticket.estimatedEffort < 1 ||
-        ticket.estimatedEffort > 10
-      ) {
-        throw new Error(
-          `Invalid estimatedEffort for ticket ${ticket.id}: ${ticket.estimatedEffort}`
-        );
-      }
-      if (!ticket.status) {
-        ticket.status = 'Todo';
-      }
-    }
-
-    return tickets;
-  } catch (error) {
-    console.error('\n❌ Failed to parse tickets from response:');
-    console.error(`Raw response:\n${response.substring(0, 500)}...\n`);
-    throw new Error(
-      `Failed to parse tickets: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-/**
- * Build review and fix prompt for ticket validation
- */
-function buildReviewAndFixPrompt(
-  initialTickets: Ticket[],
-  requirementsContent: string,
-  isScaffoldMode: boolean
-): string {
-  return `You are a ticket validation and correction expert.
-
-**Original Requirements:**
-${requirementsContent}
-
-**Generated Tickets to Review:**
-${JSON.stringify(initialTickets, null, 2)}
-
-**Your Task: VALIDATE AND FIX the tickets according to these STRICT RULES:**
-
-**RULE 1: ONE Schema Ticket Per Batch (CRITICAL)**
-- Each batch (SCAFFOLD, LOGIC) must have EXACTLY ONE schema ticket
-- ❌ WRONG: LOGIC-SCHEMA-1, LOGIC-SCHEMA-2, LOGIC-SCHEMA-3
-- ✅ CORRECT: LOGIC-SCHEMA-1 (combines ALL business entities in one ticket)
-- Same for SCAFFOLD-SCHEMA-1 (combines ALL infrastructure schema changes)
-
-**RULE 2: Feature-by-Feature Ordering (STRICT)**
-Each feature MUST follow this exact pattern:
-1. Backend ticket
-2. Frontend ticket
-3. Test ticket
-
-Example for 2 features:
-[
-  { "id": "LOGIC-SCHEMA-1", ... },        // ONE schema for all
-  { "id": "LOGIC-BACKEND-1", ... },       // Feature 1 backend
-  { "id": "LOGIC-FRONTEND-1", ... },      // Feature 1 frontend
-  { "id": "LOGIC-WEB-TEST-1", ... },      // Feature 1 test
-  { "id": "LOGIC-BACKEND-2", ... },       // Feature 2 backend
-  { "id": "LOGIC-FRONTEND-2", ... },      // Feature 2 frontend
-  { "id": "LOGIC-WEB-TEST-2", ... }       // Feature 2 test
-]
-
-**RULE 3: Sequential Numbering**
-- After combining schemas, renumber all tickets sequentially
-- LOGIC-BACKEND-1, LOGIC-BACKEND-2, LOGIC-BACKEND-3 (sequential)
-- LOGIC-FRONTEND-1, LOGIC-FRONTEND-2, LOGIC-FRONTEND-3 (sequential)
-- LOGIC-WEB-TEST-1, LOGIC-WEB-TEST-2, LOGIC-WEB-TEST-3 (sequential)
-
-**RULE 4: Test Tickets Must Include Credentials**
-- Every WEB-TEST ticket MUST start with test user credentials
-- Format: "**Test User Credentials:**\\n- Email: user+kosuke_test@example.com\\n- OTP Code: 424242"
-
-**AUTOMATIC FIXES TO APPLY:**
-
-1. **Combine Schema Tickets:**
-   - If multiple LOGIC-SCHEMA-X tickets exist, merge into ONE LOGIC-SCHEMA-1
-   - Combine all table definitions, enums, and types into single ticket
-   - Update description to include ALL schemas
-   - Same for SCAFFOLD-SCHEMA-X tickets
-   - Preserve all schema details from original tickets
-
-2. **Reorder Tickets by Feature:**
-   - Group related backend/frontend/test tickets together
-   - Enforce: backend → frontend → test pattern for each feature
-   - Do NOT group all backends, then all frontends, then all tests
-   - Each feature is a cohesive unit (backend + frontend + test)
-
-3. **Renumber Ticket IDs:**
-   - After combining/reordering, ensure sequential IDs
-   - Update ticket IDs to match new order
-   - Example: If LOGIC-BACKEND-3 becomes first backend, rename to LOGIC-BACKEND-1
-
-4. **Validate Test User Info:**
-   - Ensure all WEB-TEST tickets have credentials at top of description
-   - If missing, add placeholder credentials
-
-**ORDERING EXAMPLES:**
-
-${
-  isScaffoldMode
-    ? `**Scaffold Mode (with both SCAFFOLD and LOGIC):**
-[
-  // SCAFFOLD batch
-  { "id": "SCAFFOLD-SCHEMA-1" },      // ONE schema for all infrastructure
-  { "id": "SCAFFOLD-BACKEND-1" },     // Infrastructure feature 1 backend
-  { "id": "SCAFFOLD-FRONTEND-1" },    // Infrastructure feature 1 frontend
-  { "id": "SCAFFOLD-WEB-TEST-1" },    // Infrastructure feature 1 test
-  { "id": "SCAFFOLD-BACKEND-2" },     // Infrastructure feature 2 backend
-  { "id": "SCAFFOLD-FRONTEND-2" },    // Infrastructure feature 2 frontend
-
-  // LOGIC batch
-  { "id": "LOGIC-SCHEMA-1" },         // ONE schema for all business
-  { "id": "LOGIC-BACKEND-1" },        // Business feature 1 backend
-  { "id": "LOGIC-FRONTEND-1" },       // Business feature 1 frontend
-  { "id": "LOGIC-WEB-TEST-1" },       // Business feature 1 test
-  { "id": "LOGIC-BACKEND-2" },        // Business feature 2 backend
-  { "id": "LOGIC-FRONTEND-2" },       // Business feature 2 frontend
-  { "id": "LOGIC-WEB-TEST-2" }        // Business feature 2 test
-]`
-    : `**Logic-Only Mode:**
-[
-  { "id": "LOGIC-SCHEMA-1" },         // ONE schema for all business
-  { "id": "LOGIC-BACKEND-1" },        // Feature 1 backend
-  { "id": "LOGIC-FRONTEND-1" },       // Feature 1 frontend
-  { "id": "LOGIC-WEB-TEST-1" },       // Feature 1 test
-  { "id": "LOGIC-BACKEND-2" },        // Feature 2 backend
-  { "id": "LOGIC-FRONTEND-2" },       // Feature 2 frontend
-  { "id": "LOGIC-WEB-TEST-2" }        // Feature 2 test
-]`
-}
-
-**OUTPUT FORMAT:**
-Return ONLY a valid JSON object with this exact structure:
-{
-  "validationIssues": [
-    "Issue 1 found and fixed",
-    "Issue 2 found and fixed"
-  ],
-  "fixedTickets": [
-    { /* all ticket objects in corrected order */ }
-  ]
-}
-
-**CRITICAL INSTRUCTIONS:**
-- Return ONLY valid JSON (no markdown, no code blocks, no explanations)
-- fixedTickets array must contain ALL tickets (not just changed ones)
-- Preserve all ticket content (descriptions, acceptance criteria, effort, category)
-- Only fix structure, ordering, and numbering issues
-- If no issues found, return empty validationIssues array with original tickets
-- Ensure sequential numbering matches the new order
-
-Begin validation and fixing now.`;
-}
-
-/**
- * Review and fix tickets with Claude
- */
-async function reviewAndFixTickets(
-  initialTickets: Ticket[],
-  requirementsContent: string,
-  isScaffoldMode: boolean,
-  projectPath: string
-): Promise<ReviewResult> {
-  console.log(`\n${'='.repeat(80)}`);
-  console.log('🔍 Reviewing and Validating Tickets');
-  console.log(`${'='.repeat(80)}\n`);
-
-  const reviewPrompt = buildReviewAndFixPrompt(initialTickets, requirementsContent, isScaffoldMode);
-
-  const reviewResult = await runAgent('Review and fix generated tickets', {
-    systemPrompt: reviewPrompt,
-    maxTurns: 20,
-    verbosity: 'minimal',
-    cwd: projectPath,
-  });
-
-  try {
-    // Parse review result
-    const jsonMatch = reviewResult.response.match(/\{[\s\S]*"fixedTickets"[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No valid review result found in response');
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as ReviewResult;
-
-    if (!parsed.fixedTickets || !Array.isArray(parsed.fixedTickets)) {
-      throw new Error('Invalid review result: fixedTickets must be an array');
-    }
-
-    // Validate fixed tickets
-    const validTypes = ['schema', 'backend', 'frontend', 'test'];
-    for (const ticket of parsed.fixedTickets) {
-      if (!ticket.id || !ticket.title || !ticket.description || !ticket.type) {
-        throw new Error(`Invalid ticket structure in review result: ${JSON.stringify(ticket)}`);
-      }
-      if (!validTypes.includes(ticket.type)) {
-        throw new Error(`Invalid type in reviewed ticket ${ticket.id}: ${ticket.type}`);
-      }
-    }
-
-    return parsed;
-  } catch (error) {
-    console.error('\n❌ Review step failed to parse or validate tickets');
-    console.error('Error:', error);
-    console.error(
-      '\nReview response (first 1000 chars):',
-      reviewResult.response.substring(0, 1000)
-    );
-    throw new Error(
-      `Ticket review and validation failed. Please check the review prompt and try again.\n` +
-        `Error: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-/**
- * Write tickets to output file
- */
-function writeTicketsToFile(outputPath: string, tickets: Ticket[]): void {
-  const outputData = {
-    generatedAt: new Date().toISOString(),
-    totalTickets: tickets.length,
-    tickets,
-  };
-
-  writeFileSync(outputPath, JSON.stringify(outputData, null, 2), 'utf-8');
-}
-
-/**
  * Core tickets logic - Simplified to single agent call
  */
 export async function ticketsCore(options: TicketsOptions): Promise<TicketsResult> {
@@ -733,94 +468,28 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     captureConversation: true,
   });
 
-  // 5. Parse initial tickets
-  const initialTickets = parseAllTickets(agentResult.response);
+  // 5. Parse initial tickets using shared utility
+  const initialTickets = parseTickets(agentResult.response);
   console.log(`\n✅ Initial generation: ${initialTickets.length} tickets created`);
 
-  // 6. Review and fix tickets
-  const reviewResult = await reviewAndFixTickets(
+  // 6. Validate, fix, and write tickets using shared utility
+  const { tickets: allTickets, validationIssues } = await processAndWriteTickets(
     initialTickets,
-    requirementsContent,
-    isScaffoldMode,
-    projectPath
+    outputPath,
+    projectPath,
+    { displaySummary: true }
   );
 
-  // Display what was fixed
-  if (reviewResult.validationIssues.length > 0) {
-    console.log(`\n${'='.repeat(80)}`);
-    console.log('🔧 Validation Issues Found and Fixed:');
-    console.log(`${'='.repeat(80)}`);
-    reviewResult.validationIssues.forEach((issue, idx) => {
-      console.log(`   ${idx + 1}. ${issue}`);
-    });
-    console.log();
-  } else {
-    console.log('\n✅ No validation issues found - tickets are correctly structured\n');
+  // Display additional info about validation
+  if (validationIssues.length > 0) {
+    console.log(`📝 ${validationIssues.length} issue(s) were automatically fixed`);
   }
-
-  const allTickets = reviewResult.fixedTickets;
-
-  // 8. Display tickets by batch (scaffold vs logic based on ID) and by type
-  const scaffoldTickets = allTickets.filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-'));
-  const logicTickets = allTickets.filter((t) => t.id.toUpperCase().startsWith('LOGIC-'));
-  const testTickets = allTickets.filter((t) => t.type === 'test');
-
-  if (scaffoldTickets.length > 0) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('🏗️  SCAFFOLD Tickets (Template Adaptation)');
-    console.log(`${'='.repeat(60)}`);
-    scaffoldTickets.forEach((ticket) => {
-      const emoji =
-        ticket.type === 'schema'
-          ? '🗄️'
-          : ticket.type === 'backend'
-            ? '⚙️'
-            : ticket.type === 'frontend'
-              ? '🎨'
-              : '🌐'; // test type
-      console.log(
-        `   ${emoji} ${ticket.id}: ${ticket.title} (Effort: ${ticket.estimatedEffort}/10${ticket.category ? `, Category: ${ticket.category}` : ''})`
-      );
-    });
-  }
-
-  if (logicTickets.length > 0) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('💡 LOGIC Tickets (Business Functionality)');
-    console.log(`${'='.repeat(60)}`);
-    logicTickets.forEach((ticket) => {
-      const emoji =
-        ticket.type === 'schema'
-          ? '🗄️'
-          : ticket.type === 'backend'
-            ? '⚙️'
-            : ticket.type === 'frontend'
-              ? '🎨'
-              : '🌐'; // test type
-      console.log(
-        `   ${emoji} ${ticket.id}: ${ticket.title} (Effort: ${ticket.estimatedEffort}/10${ticket.category ? `, Category: ${ticket.category}` : ''})`
-      );
-    });
-  }
-
-  if (testTickets.length > 0) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('🧪 TEST Tickets (E2E Validation)');
-    console.log(`${'='.repeat(60)}`);
-    testTickets.forEach((ticket) => {
-      console.log(`   🌐 ${ticket.id}: ${ticket.title} (Effort: ${ticket.estimatedEffort}/10)`);
-    });
-  }
-
-  // 9. Write tickets to file
-  writeTicketsToFile(outputPath, allTickets);
-  console.log(`\n💾 Tickets saved to: ${outputPath}`);
 
   // 10. Separate tickets by phase for compatibility with existing result structure
   const schemaTickets = allTickets.filter((t) => t.type === 'schema');
   const backendTickets = allTickets.filter((t) => t.type === 'backend');
   const frontendTickets = allTickets.filter((t) => t.type === 'frontend');
-  // testTickets already declared above for display
+  const testTickets = allTickets.filter((t) => t.type === 'test');
 
   return {
     schemaTickets,
