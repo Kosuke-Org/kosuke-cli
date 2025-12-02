@@ -873,10 +873,18 @@ async function interactivePlanSession(
           )
         );
         console.log('═'.repeat(90));
+        // Get relative path for cleaner output
+        const relativeTicketsPath = ticketsPath.replace(cwd + '/', '');
         console.log('\n🎉 Planning complete!\n');
         console.log('💡 Next steps:');
         console.log('   - Review tickets: cat "' + ticketsPath + '"');
-        console.log('   - Build tickets: kosuke build --directory=' + cwd);
+        console.log(
+          '   - Build tickets: kosuke build --directory="' +
+            cwd +
+            '" --tickets="' +
+            relativeTicketsPath +
+            '"'
+        );
         console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
         continueConversation = false;
         break;
