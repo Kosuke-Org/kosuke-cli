@@ -25,7 +25,7 @@ import type { PlanOptions, Ticket } from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { processAndWriteTickets, sortTicketsByOrder } from '../utils/ticket-writer.js';
+import { processAndWriteTickets, sortTicketsByOrder } from '../utils/tickets-manager.js';
 
 /**
  * Result from programmatic plan execution
@@ -117,7 +117,7 @@ const PLAN_TOOLS: Anthropic.Tool[] = [
               id: {
                 type: 'string',
                 description:
-                  'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests',
+                  'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-ENGINE- for Python microservice, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests',
               },
               title: {
                 type: 'string',
@@ -130,9 +130,9 @@ const PLAN_TOOLS: Anthropic.Tool[] = [
               },
               type: {
                 type: 'string',
-                enum: ['schema', 'backend', 'frontend', 'test'],
+                enum: ['schema', 'engine', 'backend', 'frontend', 'test'],
                 description:
-                  'Ticket type: schema (database), backend (API), frontend (UI), test (E2E)',
+                  'Ticket type: schema (database), engine (Python microservice), backend (API), frontend (UI), test (E2E)',
               },
               estimatedEffort: {
                 type: 'number',
@@ -228,8 +228,13 @@ For each question, provide BOTH the question AND a recommended approach:
 
 **Ticket Types & Prefixes:**
 - \`PLAN-SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
+- \`PLAN-ENGINE-N\`: Python microservice (FastAPI endpoints)
 - \`PLAN-BACKEND-N\`: API/server-side logic (tRPC, server actions)
-- \`PLAN-FRONTEND-N\`: UI components and pages (React, Next.js)${
+- \`PLAN-FRONTEND-N\`: UI components and pages (React, Next.js)
+
+**When to use ENGINE vs BACKEND:**
+- **Use BACKEND (Next.js)** for: CRUD operations, auth logic, business rules, anything TypeScript handles well (90% of features)
+- **Use ENGINE (Python)** for: ML/AI, data science (numpy/pandas), complex algorithms, PDF/document parsing, image processing, or when Python libraries are required${
     noTest
       ? ''
       : `
@@ -238,12 +243,13 @@ For each question, provide BOTH the question AND a recommended approach:
 
 **Ticket Order (build system processes in this order):**
 1. PLAN-SCHEMA tickets first (database changes)
-2. PLAN-BACKEND tickets (API layer)
-3. PLAN-FRONTEND tickets (UI layer)${
+2. PLAN-ENGINE tickets (Python microservice - so backend can call it)
+3. PLAN-BACKEND tickets (API layer)
+4. PLAN-FRONTEND tickets (UI layer)${
     noTest
       ? ''
       : `
-4. PLAN-WEB-TEST tickets last (validate everything works)
+5. PLAN-WEB-TEST tickets last (validate everything works)
 
 **WEB TEST TICKETS - Stagehand Agent E2E Tests:**
 
@@ -280,33 +286,23 @@ Web test tickets are executed by Stagehand agent. Follow these guidelines:
 6. Expected: Redirected to main app`
   }
 
-**CRITICAL RULES:**
+**CRITICAL RULES FOR QUESTIONS:**
 - Questions must be NON-TECHNICAL and USER-FOCUSED
-- NO code paths, URLs, file names, or implementation details in questions
-- NO technical jargon (API, schema, components, routes, etc.)
 - Focus ONLY on user experience, behavior, and business logic
+- YOU decide all technical/algorithmic details (libraries, caching, performance, architecture)
+- Never ask about: URLs, database design, APIs, algorithms, processing timing, or implementation approach
+- Include technical decisions in ticket DESCRIPTIONS, not in questions to users
 
-**BAD QUESTIONS (too technical):**
-- "Should this be at /settings/invoices or /invoices?"
-- "Should we use a boolean flag or enum?"
-- "Should this be organization-level or user-level in the database?"
+**Examples:**
+- ❌ BAD: "Should we cache results or process on-demand?"
+- ❌ BAD: "Should this use Python or TypeScript?"
+- ✅ GOOD: "Should invoices be per-user or shared per company?"
+- ✅ GOOD: "For empty descriptions, show neutral mood or hide it?"
 
-**GOOD QUESTIONS (user-focused):**
-- "Should each user have their own invoices, or should invoices be shared per company/team?"
-- "Should dark mode apply everywhere or let users choose per-page?"
-- "Who should be able to see invoices - everyone or just admins?"
-
-- YOU decide all technical implementation details based on codebase analysis
-- Include technical details in ticket DESCRIPTIONS only (not questions)
+**Ticket Generation Rules:**
 - Generate only the tickets actually needed
 - Ensure tickets are atomic and independently implementable
 - Include clear acceptance criteria in each ticket description
-
-**Example Questions (USER-FOCUSED):**
-- "Should users be able to share tasks with others, or is this for personal use only?"
-- "Do you need email notifications when tasks are due?"
-- "Should completed tasks be archived or permanently deleted?"
-- "Who should be able to see this - everyone or just certain people?"
 
 **Example Tickets (Full JSON):**
 [
