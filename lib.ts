@@ -107,7 +107,7 @@ export {
   writeTicketsFile,
   displayTicketsSummary,
   processAndWriteTickets,
-} from './kosuke/utils/ticket-writer.js';
+} from './kosuke/utils/tickets-manager.js';
 
 // Re-export types
 export type {
@@ -155,7 +155,7 @@ export type { ValidationResult } from './kosuke/utils/validator.js';
 export type { AgentVerbosity, AgentConfig, AgentResult } from './kosuke/utils/claude-agent.js';
 export type { RequirementsOptions, RequirementsResult } from './kosuke/commands/requirements.js';
 export type { PlanResult } from './kosuke/commands/plan.js';
-export type { TicketReviewResult } from './kosuke/utils/ticket-writer.js';
+export type { TicketReviewResult } from './kosuke/utils/tickets-manager.js';
 
 // Export version from package.json
 export const version = packageJson.version;

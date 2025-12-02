@@ -97,10 +97,10 @@ export interface TicketsOptions {
 }
 
 export interface Ticket {
-  id: string; // e.g., "SCAFFOLD-SCHEMA-1", "LOGIC-BACKEND-2", "SCAFFOLD-WEB-TEST-1"
+  id: string; // e.g., "SCAFFOLD-SCHEMA-1", "LOGIC-ENGINE-1", "LOGIC-BACKEND-2", "SCAFFOLD-WEB-TEST-1"
   title: string;
   description: string;
-  type: 'schema' | 'backend' | 'frontend' | 'test'; // schema = database, backend = API, frontend = UI, test = E2E tests
+  type: 'schema' | 'engine' | 'backend' | 'frontend' | 'test'; // schema = database, engine = Python microservice, backend = API, frontend = UI, test = E2E tests
   estimatedEffort: number; // 1-10
   status: 'Todo' | 'InProgress' | 'Done' | 'Error';
   category?: string; // e.g., "auth", "billing", "email", "user-management", "tasks"
@@ -109,6 +109,7 @@ export interface Ticket {
 
 export interface TicketsResult {
   schemaTickets: Ticket[];
+  engineTickets: Ticket[]; // Python microservice tickets
   backendTickets: Ticket[];
   frontendTickets: Ticket[];
   testTickets: Ticket[]; // Web test tickets
@@ -258,7 +259,6 @@ export interface MigrateResult {
 export interface PlanOptions {
   prompt: string; // Feature or bug description
   directory?: string; // Directory with existing code (default: cwd)
-  output?: string; // Output file for tickets (default: tickets.json)
   noTest?: boolean; // Skip WEB-TEST ticket creation
   noLogs?: boolean;
 }

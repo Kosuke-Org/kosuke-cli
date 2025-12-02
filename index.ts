@@ -105,7 +105,6 @@ async function main() {
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
-          output: args.find((arg) => arg.startsWith('--output='))?.split('=')[1],
           noTest: args.includes('--no-test'),
           noLogs: args.includes('--no-logs'),
         };
@@ -116,14 +115,13 @@ async function main() {
           console.log('\nOptions:');
           console.log('  --prompt="..."       Feature or bug description (required)');
           console.log('  --directory=PATH     Directory with existing code (default: cwd)');
-          console.log('  --output=FILE        Output file for tickets (default: tickets.json)');
           console.log('  --no-test            Skip WEB-TEST ticket creation');
+          console.log('\nOutput:');
+          console.log('  Tickets are saved to tickets/{timestamp}.ticket.json');
           console.log('\nExamples:');
           console.log('  kosuke plan --prompt="Add dark mode toggle"');
           console.log('  kosuke plan --prompt="Fix login timeout bug" --directory=./my-app');
-          console.log(
-            '  kosuke plan --prompt="Add user notifications" --output=feature-tickets.json'
-          );
+          console.log('  kosuke plan --prompt="Add user notifications" --no-test');
           process.exit(1);
         }
 
@@ -305,18 +303,21 @@ COMMANDS:
   plan --prompt="..." [options]
     AI-driven ticket planning from feature/bug descriptions
     Analyzes existing codebase and asks clarification questions
-    Generates tickets.json compatible with build command
+    Generates tickets in tickets/{timestamp}.ticket.json
 
     Options:
       --prompt="..."        Feature or bug description (required)
       --directory=<path>    Directory with existing code (default: current directory)
       --dir=<path>          Alias for --directory
-      --output=<file>       Output file for tickets (default: tickets.json)
+      --no-test             Skip WEB-TEST ticket creation
+
+    Output:
+      Creates tickets/{timestamp}.ticket.json in project directory
 
     Examples:
       kosuke plan --prompt="Add dark mode toggle"
       kosuke plan --prompt="Fix login timeout bug" --directory=./my-app
-      kosuke plan --prompt="Add user notifications" --output=feature-tickets.json
+      kosuke plan --prompt="Add user notifications" --no-test
 
     Features:
       - Analyzes codebase to understand existing patterns

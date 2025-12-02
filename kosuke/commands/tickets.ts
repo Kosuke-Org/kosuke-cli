@@ -45,7 +45,7 @@ import { join, resolve } from 'path';
 import type { TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { parseTickets, processAndWriteTickets } from '../utils/ticket-writer.js';
+import { parseTickets, processAndWriteTickets } from '../utils/tickets-manager.js';
 import { planCore } from './plan.js';
 
 /**
@@ -168,6 +168,7 @@ These tickets implement the actual features and requirements from the document.
 
 Logic tickets should:
 - 🗄️ Create schema for business entities (tasks, projects, posts, etc.)
+- 🐍 Create Python engine endpoints for algorithms/calculations
 - ⚙️ Build backend APIs for business features
 - 🎨 Create frontend UI for business features
 
@@ -179,16 +180,17 @@ Logic tickets should:
 - ✅ CORRECT: LOGIC-SCHEMA-1 (all entities: properties, inquiries, favorites, etc.)
 
 **RULE 2: Feature-by-Feature Pattern (STRICT)**
-After schema, each feature MUST follow: backend → frontend → test
+After schema, each feature MUST follow: engine → backend → frontend → test
 
 Example with 2 features:
 1. LOGIC-SCHEMA-1 (ALL schemas combined)
-2. LOGIC-BACKEND-1 (feature 1 backend)
-3. LOGIC-FRONTEND-1 (feature 1 frontend)
-4. LOGIC-WEB-TEST-1 (feature 1 test)
-5. LOGIC-BACKEND-2 (feature 2 backend)
-6. LOGIC-FRONTEND-2 (feature 2 frontend)
-7. LOGIC-WEB-TEST-2 (feature 2 test)
+2. LOGIC-ENGINE-1 (feature 1 engine)
+3. LOGIC-BACKEND-1 (feature 1 backend)
+4. LOGIC-FRONTEND-1 (feature 1 frontend)
+5. LOGIC-WEB-TEST-1 (feature 1 test)
+6. LOGIC-BACKEND-2 (feature 2 backend)
+7. LOGIC-FRONTEND-2 (feature 2 frontend)
+8. LOGIC-WEB-TEST-2 (feature 2 test)
 
 **RULE 3: Do NOT group by type**
 ❌ WRONG: All backends, then all frontends, then all tests
@@ -196,6 +198,7 @@ Example with 2 features:
 
 **Ticket Granularity:**
 - Schema: EXACTLY ONE ticket for LOGIC batch (combines ALL entities)
+- Engine: One ticket per distinct algorithm/endpoint (could be 0-3 tickets)
 - Backend: Let complexity decide (could be 1-5 tickets per batch)
 - Frontend: Let complexity decide (could be 1-5 tickets per batch)
 - Web Tests: 1 test per major user flow (matches feature grouping)
@@ -227,12 +230,16 @@ Example with 2 features:
    - Schema tickets are automatically validated during build (no separate test tickets needed)
    - For web tests: Include test user credentials, detailed steps, and expected outcomes
 
+**When to use ENGINE vs BACKEND:**
+- **Use BACKEND (Next.js)** for: CRUD operations, auth logic, business rules, anything TypeScript handles well (90% of features)
+- **Use ENGINE (Python)** for: ML/AI, data science (numpy/pandas), complex algorithms, PDF/document parsing, image processing, or when Python libraries are required
+
 **Ticket Structure:**
 Each ticket must be a JSON object with:
-- id: string (e.g., "SCAFFOLD-SCHEMA-1", "LOGIC-BACKEND-2", "SCAFFOLD-WEB-TEST-1")
+- id: string (e.g., "SCAFFOLD-SCHEMA-1", "LOGIC-ENGINE-1", "LOGIC-BACKEND-2", "SCAFFOLD-WEB-TEST-1")
 - title: string (clear, concise title)
 - description: string (detailed description with acceptance criteria)
-- type: "schema" | "backend" | "frontend" | "test"
+- type: "schema" | "engine" | "backend" | "frontend" | "test"
 - estimatedEffort: number (1-10, where 1=very easy, 10=very complex)
 - status: "Todo"
 - category: string (e.g., "auth", "billing", "user-management", "tasks")
@@ -389,7 +396,6 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     const planResult = await planCore({
       prompt: options.prompt,
       directory: projectPath,
-      output: options.output || 'tickets.json',
       noTest: options.noTest,
       noLogs: options.noLogs,
     });
@@ -400,12 +406,14 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
 
     // Convert plan result to tickets result format
     const schemaTickets = planResult.tickets.filter((t) => t.type === 'schema');
+    const engineTickets = planResult.tickets.filter((t) => t.type === 'engine');
     const backendTickets = planResult.tickets.filter((t) => t.type === 'backend');
     const frontendTickets = planResult.tickets.filter((t) => t.type === 'frontend');
     const testTickets = planResult.tickets.filter((t) => t.type === 'test');
 
     return {
       schemaTickets,
+      engineTickets,
       backendTickets,
       frontendTickets,
       testTickets,
@@ -487,12 +495,14 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
 
   // 10. Separate tickets by phase for compatibility with existing result structure
   const schemaTickets = allTickets.filter((t) => t.type === 'schema');
+  const engineTickets = allTickets.filter((t) => t.type === 'engine');
   const backendTickets = allTickets.filter((t) => t.type === 'backend');
   const frontendTickets = allTickets.filter((t) => t.type === 'frontend');
   const testTickets = allTickets.filter((t) => t.type === 'test');
 
   return {
     schemaTickets,
+    engineTickets,
     backendTickets,
     frontendTickets,
     testTickets,
@@ -531,12 +541,14 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
     // Get all tickets by batch (scaffold vs logic)
     const scaffoldTickets = [
       ...result.schemaTickets,
+      ...result.engineTickets,
       ...result.backendTickets,
       ...result.frontendTickets,
       ...result.testTickets,
     ].filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-'));
     const logicTickets = [
       ...result.schemaTickets,
+      ...result.engineTickets,
       ...result.backendTickets,
       ...result.frontendTickets,
       ...result.testTickets,
@@ -553,6 +565,9 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
         `   🗄️  Schema: ${result.schemaTickets.filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-')).length} (auto-validated)`
       );
       console.log(
+        `   🐍 Engine: ${result.engineTickets.filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-')).length} (auto-validated)`
+      );
+      console.log(
         `   ⚙️  Backend: ${result.backendTickets.filter((t) => t.id.toUpperCase().startsWith('SCAFFOLD-')).length}`
       );
       console.log(
@@ -566,6 +581,9 @@ export async function ticketsCommand(options: TicketsOptions): Promise<void> {
     console.log(`\n💡 Logic Tickets (Business Functionality): ${logicTickets.length}`);
     console.log(
       `   🗄️  Schema: ${result.schemaTickets.filter((t) => t.id.toUpperCase().startsWith('LOGIC-')).length} (auto-validated)`
+    );
+    console.log(
+      `   🐍 Engine: ${result.engineTickets.filter((t) => t.id.toUpperCase().startsWith('LOGIC-')).length} (auto-validated)`
     );
     console.log(
       `   ⚙️  Backend: ${result.backendTickets.filter((t) => t.id.toUpperCase().startsWith('LOGIC-')).length}`
