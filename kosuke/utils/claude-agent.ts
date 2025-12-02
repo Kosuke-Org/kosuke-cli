@@ -236,6 +236,10 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     }
   }
 
+  // Create AbortController for cleanup - the SDK spawns child processes
+  // that need to be terminated after each query to prevent memory accumulation
+  const abortController = new AbortController();
+
   const options: Options = {
     model,
     systemPrompt,
@@ -243,6 +247,7 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     cwd,
     permissionMode,
     settingSources,
+    abortController, // Pass to SDK for process cleanup
   };
 
   const responseStream = query({ prompt, options });
@@ -401,6 +406,14 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
   // Include conversation if captured
   if (captureConversation && conversationMessages.length > 0) {
     result.conversationMessages = conversationMessages;
+  }
+
+  // Cleanup: Abort the controller to terminate any child processes spawned by the SDK
+  // This prevents memory accumulation when running multiple agents sequentially (e.g., kosuke build)
+  try {
+    abortController.abort();
+  } catch {
+    // Ignore abort errors - cleanup is best-effort
   }
 
   return result;

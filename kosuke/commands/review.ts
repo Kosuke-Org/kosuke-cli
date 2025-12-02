@@ -12,7 +12,7 @@
 
 import type { ReviewContext, ReviewOptions, ReviewResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
-import { getGitDiff, hasUncommittedChanges } from '../utils/git.js';
+import { getGitDiff, hasUncommittedChanges, stageAllChanges } from '../utils/git.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { runComprehensiveLinting } from '../utils/validator.js';
 
@@ -114,7 +114,10 @@ export async function reviewCore(options: ReviewOptions = {}): Promise<ReviewRes
 
   console.log('   ✅ Found uncommitted changes\n');
 
-  // 2. Get git diff
+  // 2. Stage all changes so untracked files appear in diff
+  await stageAllChanges(cwd);
+
+  // 3. Get git diff
   console.log('📝 Getting git diff...');
   const gitDiff = await getGitDiff(cwd);
 

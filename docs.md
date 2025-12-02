@@ -58,7 +58,8 @@
 | **getcode**      | repository-manager, repository-resolver | -                    | Core         | Explore GitHub repositories               |
 | **sync-rules**   | -                                       | -                    | Core         | Sync CLAUDE.md rules from template        |
 | **requirements** | -                                       | -                    | Core         | Interactive requirements gathering        |
-| **tickets**      | -                                       | -                    | Core         | Generate tickets (no db-test)             |
+| **plan**         | ticket-writer.ts                        | tickets (--prompt)   | Core         | Interactive ticket planning with Q&A      |
+| **tickets**      | plan (--prompt), ticket-writer.ts       | -                    | Core         | Generate tickets from doc or prompt       |
 | **lint**         | validator.ts                            | review, ship, build  | Core         | Fix linting errors with Claude            |
 | **migrate**      | claude-agent.ts                         | build (after SCHEMA) | Core         | Apply migrations, seed DB, validate       |
 | **review**       | reviewCore, lint                        | ship (conditional)   | Wrapper      | Review git diff against CLAUDE.md         |
@@ -76,6 +77,7 @@
 | **github.ts**              | sync-rules, build         | GitHub API integration                |
 | **repository-manager.ts**  | getcode                   | Clone/update repos                    |
 | **repository-resolver.ts** | getcode                   | Infer repo from queries               |
+| **ticket-writer.ts**       | plan, tickets             | Shared ticket validation and writing  |
 | **tickets-manager.ts**     | ship, build, test         | Load/update tickets.json              |
 | **error-analyzer.ts**      | test                      | Analyze test/runtime failures         |
 | **log-collector.ts**       | test                      | Collect Docker/test logs              |
@@ -127,8 +129,19 @@ migrate (standalone or called by build after SCHEMA tickets)
 requirements
 └── Anthropic SDK directly (custom tools for docs.md)
 
-tickets (two modes)
-├── SCAFFOLD MODE (--scaffold flag):
+plan (interactive ticket planning)
+├── Anthropic SDK directly (custom tools for exploration)
+├── Interactive Q&A with clarification questions
+└── ticket-writer.ts (validation and writing)
+    └─► Creates: tickets.json with PLAN-* prefixed tickets
+
+tickets (three modes)
+├── PROMPT MODE (--prompt flag):
+│   └── plan (delegates to plan command)
+│       ├── Interactive Q&A with clarification questions
+│       └── ticket-writer.ts (validation and writing)
+│           └─► Creates: tickets.json with PLAN-* prefixed tickets
+├── SCAFFOLD MODE (--scaffold flag, document mode):
 │   ├── Scaffold batch:
 │   │   ├── claude-agent.ts (schema scaffold, auto-validated by migrate)
 │   │   ├── claude-agent.ts (backend scaffold)
@@ -192,11 +205,16 @@ NEW PROJECT (with Kosuke Template):
 
 EXISTING PROJECT (add features):
 
-1. tickets --prompt="Add dark mode toggle"  → Smart layer detection
-   └─► Creates: tickets.json
-       Analyzes requirements to determine needed layers (schema/backend/frontend)
-       Generates only required tickets (e.g., frontend-only for UI changes)
-       Claude infers tech stack from codebase exploration
+Option A: Using plan directly (interactive)
+1. plan --prompt="Add dark mode toggle"  → Interactive Q&A
+   └─► Creates: tickets.json with PLAN-* tickets
+       Asks clarification questions (non-technical)
+       Reply "go with recommendations" to accept defaults
+
+Option B: Using tickets --prompt (same as plan)
+1. tickets --prompt="Add dark mode toggle"  → Delegates to plan
+   └─► Creates: tickets.json with PLAN-* tickets
+       Same interactive Q&A as plan command
 
 2. build                 → Same as above (batch process tickets)
 
@@ -240,13 +258,43 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 
 - No options (fully interactive)
 
+#### plan
+
+- `--prompt="..."` - Feature or bug description (required)
+- `--directory=PATH` - Directory with existing code (default: cwd)
+- `--dir=PATH` - Alias for --directory
+- `--output=FILE` - Output file for tickets (default: tickets.json)
+- `--no-test` - Skip PLAN-WEB-TEST ticket generation
+
+**Features:**
+
+- Interactive clarification questions (non-technical, user-focused)
+- Explores codebase to understand patterns
+- Reply "go with recommendations" to accept all defaults
+- Generates PLAN-\* prefixed tickets
+
+Examples:
+
+- `kosuke plan --prompt="Add dark mode toggle"` - Interactive planning
+- `kosuke plan --prompt="Fix login bug" --dir=./app` - With directory
+
 #### tickets
 
+- `--prompt="..."` - Feature/bug description (triggers interactive mode via plan)
 - `--path=FILE` - Path to requirements document (default: docs.md)
 - `--prompt="..."` - Inline requirements (alternative to --path)
 - `--scaffold` - Enable scaffold mode for new projects (default: logic-only mode)
 - `--directory=PATH` - Directory for Claude to explore (default: cwd)
+- `--dir=PATH` - Alias for --directory
 - `--output=FILE` - Output file for tickets (default: tickets.json)
+- `--no-test` - Skip WEB-TEST ticket generation
+
+**Prompt Mode (--prompt):**
+
+- Uses `plan` command internally for interactive ticket creation
+- Asks clarification questions before generating tickets
+- Generates PLAN-\* prefixed tickets
+- Best for: Adding features or fixing bugs in existing projects
 
 **Logic-Only Mode (default):**
 
@@ -264,9 +312,10 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 
 Examples:
 
-- `kosuke tickets --prompt="Add dark mode toggle"` - Generate tickets for feature (logic-only)
-- `kosuke tickets --scaffold --path=docs.md` - Generate tickets for new project (scaffold mode)
-- `kosuke tickets --path=feature.md` - Generate tickets from file (logic-only)
+- `kosuke tickets --prompt="Add dark mode toggle"` - Interactive with questions (uses plan)
+- `kosuke tickets` - Document mode from docs.md
+- `kosuke tickets --path=feature.md` - Document mode from custom file
+- `kosuke tickets --scaffold` - Scaffold + logic from docs.md
 
 #### ship
 

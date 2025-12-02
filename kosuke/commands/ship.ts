@@ -59,8 +59,14 @@ function buildImplementationPrompt(ticket: Ticket, _dbUrl: string): string {
 This is a SCHEMA ticket. After making changes to database schema files:
 1. Run \`bun run db:generate\` to generate Drizzle migrations
 2. Verify migration files were created in lib/db/migrations/
-3. **DO NOT run db:migrate** - this will be handled automatically after implementation
-4. Ensure schema changes follow Drizzle ORM best practices from project guidelines
+3. Ensure schema changes follow Drizzle ORM best practices from project guidelines
+
+⛔ **FORBIDDEN COMMANDS** (will be run automatically in a later phase):
+- DO NOT run \`db:migrate\` or \`bun run db:migrate\`
+- DO NOT run \`db:seed\` or \`bun run db:seed\`
+- DO NOT run \`db:push\` or \`bun run db:push\`
+- DO NOT connect to or query the database directly
+Only run \`db:generate\` - the build system handles migrations separately.
 `
     : '';
 

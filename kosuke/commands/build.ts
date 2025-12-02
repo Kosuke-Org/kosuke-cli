@@ -1,8 +1,8 @@
 /**
- * Build command - Batch process all tickets from tickets.json
+ * Build command - Process all tickets from tickets.json
  *
  * This command processes all "Todo" and "Error" tickets sequentially,
- * implementing each one using the ship core engine and committing individually.
+ * implementing each one using the ship core engine and committing after each ticket.
  * Frontend tickets automatically run tests (unless --no-test is specified).
  * All tickets include code review by default (unless --no-review is specified).
  *
@@ -89,42 +89,20 @@ function getTicketsToProcess(ticketsData: TicketsFile): Ticket[] {
 }
 
 /**
- * Commit batch of tickets to current branch
+ * Commit a single ticket to current branch
  */
-async function commitBatch(batchTickets: Ticket[], cwd: string): Promise<void> {
+async function commitTicket(ticket: Ticket, cwd: string): Promise<void> {
   const git = simpleGit(cwd);
 
   // Stage all changes
   await git.add('.');
 
-  // Create commit message with all tickets in batch
-  const ticketIds = batchTickets.map((t) => t.id).join(', ');
-  const batchType = batchTickets[0].id.startsWith('WEB-TEST-')
-    ? batchTickets[0].id.split('-')[2] === '1'
-      ? 'scaffold'
-      : 'logic'
-    : 'implementation';
+  // Create commit message for this ticket
+  const ticketType = ticket.type || 'feat';
+  const commitMessage = `${ticketType}: ${ticket.id} - ${ticket.title}`;
+  await git.commit(commitMessage, ['--no-verify']);
 
-  const commitMessage = `feat: ${batchType} batch (${ticketIds})`;
-  await git.commit(commitMessage);
-
-  console.log(`\n   ✅ Committed batch: ${commitMessage}\n`);
-}
-
-/**
- * Determine if we should commit after this ticket
- * Commits happen after the last WEB-TEST in a batch
- */
-function shouldCommitAfterTicket(currentTicket: Ticket, nextTicket: Ticket | undefined): boolean {
-  // Always commit after last ticket
-  if (!nextTicket) return true;
-
-  // Commit if current is WEB-TEST and next is not WEB-TEST (batch boundary)
-  if (currentTicket.id.startsWith('WEB-TEST-') && !nextTicket.id.startsWith('WEB-TEST-')) {
-    return true;
-  }
-
-  return false;
+  console.log(`\n   ✅ Committed: ${commitMessage}\n`);
 }
 
 /**
@@ -214,12 +192,9 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
     });
     console.log('');
 
-    // 4. Process each ticket sequentially with batch tracking
-    const batchTickets: Ticket[] = []; // Track tickets in current batch
-
+    // 4. Process each ticket sequentially
     for (let i = 0; i < ticketsToProcess.length; i++) {
       const ticket = ticketsToProcess[i];
-      const nextTicket = ticketsToProcess[i + 1];
 
       console.log('\n' + '='.repeat(80));
       console.log(`📦 Processing Ticket ${i + 1}/${ticketsToProcess.length}: ${ticket.id}`);
@@ -373,31 +348,19 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
         updateTicketStatus(ticketsPath, ticket.id, 'Done');
         console.log(`   ✅ Ticket ${ticket.id} marked as Done\n`);
 
-        // Add to batch tracking
-        batchTickets.push(ticket);
+        // Step 4: Commit this ticket
+        if (askCommit) {
+          // Interactive: ask before committing
+          const commitConfirmed = await promptConfirmation(`\n❓ Commit ${ticket.id}?`);
 
-        // Step 4: Commit batch if at batch boundary
-        const shouldCommit = shouldCommitAfterTicket(ticket, nextTicket);
-
-        if (shouldCommit && batchTickets.length > 0) {
-          if (askCommit) {
-            // Interactive: ask before committing
-            const commitConfirmed = await promptConfirmation(
-              `\n❓ Commit batch of ${batchTickets.length} ticket(s)?`
-            );
-
-            if (commitConfirmed) {
-              await commitBatch(batchTickets, cwd);
-            } else {
-              console.log('   ⏭️  Skipped batch commit\n');
-            }
+          if (commitConfirmed) {
+            await commitTicket(ticket, cwd);
           } else {
-            // Default: auto-commit batch
-            await commitBatch(batchTickets, cwd);
+            console.log('   ⏭️  Skipped commit for this ticket\n');
           }
-
-          // Reset batch tracking
-          batchTickets.length = 0;
+        } else {
+          // Default: auto-commit each ticket
+          await commitTicket(ticket, cwd);
         }
 
         // Ask for confirmation before proceeding to next ticket (if not last ticket)

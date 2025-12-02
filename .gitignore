@@ -5,8 +5,9 @@
 /.pnp
 .pnp.js
 
-/kosuke-template
-/idealista-clone
+# projects (keep only .keep)
+/projects/*
+!/projects/.keep
 
 # testing
 /coverage

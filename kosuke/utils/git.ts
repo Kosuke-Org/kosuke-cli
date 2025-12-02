@@ -162,3 +162,11 @@ export async function hasUncommittedChanges(cwd?: string): Promise<boolean> {
   const status = await git.status();
   return status.files.length > 0;
 }
+
+/**
+ * Stage all changes (including untracked files) so they appear in git diff
+ */
+export async function stageAllChanges(cwd?: string): Promise<void> {
+  const git = getGitInstance(cwd);
+  await git.add('.');
+}
