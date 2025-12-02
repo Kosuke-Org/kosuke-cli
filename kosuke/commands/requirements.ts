@@ -16,8 +16,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import * as readline from 'readline';
 import { calculateCost } from '../utils/claude-agent.js';
+import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 
 /**
@@ -552,7 +552,7 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
   console.log('💡 This tool will help you create comprehensive product requirements.\n');
   console.log("📝 I'll analyze your product idea, ask clarification questions,");
   console.log('   and generate a detailed docs.md file.\n');
-  console.log('✨ Tip: Press Enter to submit, Shift+Enter for new lines.\n');
+  console.log('✨ Tip: Enter to submit, Ctrl+J for new lines.\n');
 
   // Set up global Ctrl+C handler for the entire interactive session
   const handleSigInt = async () => {
@@ -563,11 +563,6 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
     process.exit(0);
   };
   process.on('SIGINT', handleSigInt);
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
 
   const session: RequirementsSession = {
     productDescription: '',
@@ -581,125 +576,6 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
   let totalCacheReadTokens = 0;
   let totalCost = 0;
 
-  const askQuestion = (prompt: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const lines: string[] = [];
-      let currentLine = '';
-      let escapeBuffer = '';
-
-      console.log('(Press Enter to submit, Shift+Enter for new line, or Ctrl+C to exit)\n');
-      process.stdout.write(prompt);
-
-      // Store original stdin state
-      const wasRaw = process.stdin.isRaw;
-
-      // Enable raw mode to capture key combinations and disable echo
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(true);
-      }
-
-      // Remove all existing listeners to prevent duplicates
-      process.stdin.removeAllListeners('data');
-
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
-
-      const onData = (key: string) => {
-        // Handle escape sequences (for Shift+Enter and other special keys)
-        if (escapeBuffer.length > 0 || key === '\x1b') {
-          escapeBuffer += key;
-
-          // Check for Shift+Enter sequences
-          // Common sequences: \x1b[13;2~ or \x1b\r or \x1bOM
-          if (
-            escapeBuffer === '\x1b\r' ||
-            escapeBuffer === '\x1b\n' ||
-            escapeBuffer.match(/\x1b\[13;2~/)
-          ) {
-            // Shift+Enter - add new line
-            lines.push(currentLine);
-            currentLine = '';
-            process.stdout.write('\n' + ' '.repeat(prompt.length));
-            escapeBuffer = '';
-            return;
-          }
-
-          // If escape sequence is incomplete, wait for more
-          if (escapeBuffer.length < 6) {
-            return;
-          }
-
-          // Unknown escape sequence, ignore it
-          escapeBuffer = '';
-          return;
-        }
-
-        // Ctrl+C
-        if (key === '\u0003') {
-          cleanup();
-          process.exit(0);
-        }
-
-        // Ctrl+D (EOF)
-        if (key === '\u0004') {
-          if (currentLine === '' && lines.length === 0) {
-            cleanup();
-            resolve('');
-            return;
-          }
-        }
-
-        // Regular Enter key (without Shift) - \r
-        if (key === '\r') {
-          // Submit the input
-          if (currentLine.length > 0) {
-            lines.push(currentLine);
-          }
-          process.stdout.write('\n');
-          cleanup();
-          resolve(lines.join('\n').trim());
-          return;
-        }
-
-        // Backspace (127 or \b)
-        if (key === '\u007f' || key === '\b' || key === '\x08') {
-          if (currentLine.length > 0) {
-            currentLine = currentLine.slice(0, -1);
-            // Move cursor back, write space, move cursor back again
-            process.stdout.write('\b \b');
-          }
-          return;
-        }
-
-        // Tab - insert 2 spaces
-        if (key === '\t') {
-          currentLine += '  ';
-          process.stdout.write('  ');
-          return;
-        }
-
-        // Ignore other control characters (except printable ones)
-        if (key.charCodeAt(0) < 32) {
-          return;
-        }
-
-        // Regular character
-        currentLine += key;
-        process.stdout.write(key);
-      };
-
-      const cleanup = () => {
-        process.stdin.removeListener('data', onData);
-        if (process.stdin.isTTY) {
-          process.stdin.setRawMode(wasRaw || false);
-        }
-        process.stdin.pause();
-      };
-
-      process.stdin.on('data', onData);
-    });
-  };
-
   try {
     // Initial product description
     console.log("🚀 Let's start! Describe the web application you want to build:\n");
@@ -707,7 +583,6 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
 
     if (!productDescription) {
       console.log('\n❌ No product description provided. Exiting.');
-      rl.close();
       return {
         messages: [],
         tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
@@ -827,7 +702,6 @@ async function interactiveSession(logContext?: ReturnType<typeof logger.createCo
   } finally {
     // Clean up signal handler
     process.removeListener('SIGINT', handleSigInt);
-    rl.close();
   }
 
   // Return session data for logging

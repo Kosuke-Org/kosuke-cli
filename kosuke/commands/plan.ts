@@ -21,9 +21,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { glob } from 'glob';
-import * as readline from 'readline';
 import type { PlanOptions, Ticket } from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
+import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 import { processAndWriteTickets, sortTicketsByOrder } from '../utils/ticket-writer.js';
 
@@ -765,7 +765,11 @@ async function interactivePlanSession(
 
   const systemPrompt = buildPlanSystemPrompt(claudeMdContent, noTest);
 
-  console.log('✨ Tip: Press Enter to submit, type "exit" to quit.\n');
+  console.log(`${'─'.repeat(60)}`);
+  console.log('🤖 Using model: claude-sonnet-4-5');
+  console.log(`${'─'.repeat(60)}\n`);
+
+  console.log('✨ Tip: Enter to submit, Ctrl+J for new lines.\n');
 
   // Set up Ctrl+C handler
   const handleSigInt = async () => {
@@ -776,11 +780,6 @@ async function interactivePlanSession(
     process.exit(0);
   };
   process.on('SIGINT', handleSigInt);
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
 
   const session: PlanSession = {
     prompt: initialPrompt,
@@ -793,100 +792,6 @@ async function interactivePlanSession(
   let totalCacheReadTokens = 0;
   let totalCost = 0;
   let finalTickets: Ticket[] = [];
-
-  const askQuestion = (prompt: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const lines: string[] = [];
-      let currentLine = '';
-
-      console.log('(Enter = new line, empty line = submit, Ctrl+D = submit)\n');
-      process.stdout.write(prompt);
-
-      // Store original stdin state
-      const wasRaw = process.stdin.isRaw;
-
-      // Enable raw mode to capture key combinations
-      if (process.stdin.isTTY) {
-        process.stdin.setRawMode(true);
-      }
-
-      // Remove existing listeners
-      process.stdin.removeAllListeners('data');
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
-
-      const onData = (key: string) => {
-        // Ctrl+C - exit
-        if (key === '\u0003') {
-          cleanup();
-          process.exit(0);
-        }
-
-        // Ctrl+D - submit
-        if (key === '\u0004') {
-          if (currentLine.length > 0) {
-            lines.push(currentLine);
-          }
-          process.stdout.write('\n');
-          cleanup();
-          resolve(lines.join('\n').trim());
-          return;
-        }
-
-        // Enter key - new line OR submit if empty
-        if (key === '\r') {
-          // If current line is empty and we have content, submit
-          if (currentLine === '' && lines.length > 0) {
-            process.stdout.write('\n');
-            cleanup();
-            resolve(lines.join('\n').trim());
-            return;
-          }
-
-          // Otherwise, add line and continue
-          lines.push(currentLine);
-          currentLine = '';
-          process.stdout.write('\n... ');
-          return;
-        }
-
-        // Backspace
-        if (key === '\u007f' || key === '\b' || key === '\x08') {
-          if (currentLine.length > 0) {
-            currentLine = currentLine.slice(0, -1);
-            process.stdout.write('\b \b');
-          }
-          return;
-        }
-
-        // Tab - insert 2 spaces
-        if (key === '\t') {
-          currentLine += '  ';
-          process.stdout.write('  ');
-          return;
-        }
-
-        // Ignore escape sequences and other control characters
-        if (key === '\x1b' || key.charCodeAt(0) < 32) {
-          return;
-        }
-
-        // Regular character
-        currentLine += key;
-        process.stdout.write(key);
-      };
-
-      const cleanup = () => {
-        process.stdin.removeListener('data', onData);
-        if (process.stdin.isTTY) {
-          process.stdin.setRawMode(wasRaw || false);
-        }
-        process.stdin.pause();
-      };
-
-      process.stdin.on('data', onData);
-    });
-  };
 
   try {
     // Start with initial prompt
@@ -993,7 +898,6 @@ async function interactivePlanSession(
     throw error;
   } finally {
     process.removeListener('SIGINT', handleSigInt);
-    rl.close();
   }
 
   return {

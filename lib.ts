@@ -99,6 +99,7 @@ export {
 export { getRepoLocalPath } from './kosuke/utils/repository-manager.js';
 export { validateRepoAccess } from './kosuke/utils/repository-resolver.js';
 export { logger, withCommandTracking, setupCancellationHandler } from './kosuke/utils/logger.js';
+export { askQuestion } from './kosuke/utils/interactive-input.js';
 export {
   parseTickets,
   sortTicketsByOrder,
