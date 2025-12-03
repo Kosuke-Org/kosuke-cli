@@ -6,7 +6,7 @@
  */
 
 import { mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import type { GranularTestScript, GranularTestStep, TestContext } from '../types.js';
 import { runAgent, type AgentResult } from './claude-agent.js';
 
@@ -30,22 +30,26 @@ export async function generateGranularTestScript(
   context?: TestContext,
   directory?: string
 ): Promise<{ script: GranularTestScript; tokensUsed: AgentResult['tokensUsed']; cost: number }> {
+  // Resolve directory to absolute path for agent SDK
+  const resolvedCwd = directory ? resolve(directory) : process.cwd();
+
   if (directory) {
-    console.log(`🤖 Generating granular test script with repository context (${directory})...\n`);
+    console.log(`🤖 Generating granular test script with repository context`);
+    console.log(`   📂 Directory: ${resolvedCwd}\n`);
   } else {
     console.log('🤖 Generating granular test script (standalone mode)...\n');
   }
 
   const systemPrompt = buildSystemPrompt(directory, config);
 
-  const fullPrompt = buildGenerationPrompt(prompt, context);
+  const fullPrompt = buildGenerationPrompt(prompt, context, directory);
 
   const result = await runAgent(fullPrompt, {
     systemPrompt,
-    maxTurns: 10,
-    verbosity: 'normal',
-    cwd: directory, // Use specified directory or default cwd
+    maxTurns: 30,
+    cwd: resolvedCwd, // Use absolute path for agent SDK
     settingSources: directory ? ['project'] : [], // Load CLAUDE.md only if directory provided
+    verbosity: config.verbose ? 'verbose' : 'normal', // Pass through verbosity for tool call visibility
   });
 
   const script = parseGeneratedScript(result.response, config);
@@ -70,7 +74,31 @@ function buildSystemPrompt(directory: string | undefined, config: ScriptConfig):
 
 ${
   directory
-    ? `You have access to the codebase in ${directory}. Use file exploration tools to understand the application structure, routing, and UI components before generating the test script.`
+    ? `**CRITICAL REQUIREMENT: You MUST explore the codebase at ${directory} BEFORE generating ANY test script.**
+
+DO NOT generate test scripts based on assumptions. YOU MUST:
+
+1. **FIRST**: Use \`codebase_search\` to find the relevant pages mentioned in the test prompt
+   - Search for authentication pages (login, signup)
+   - Search for the specific features/modules mentioned in the test
+   - Search for routing patterns
+
+2. **SECOND**: Use \`read_file\` to understand:
+   - Page component structure
+   - Form field names and IDs
+   - Button text and selectors
+   - Navigation structure
+   - Authentication flows
+
+3. **THIRD**: Use \`grep\` to find:
+   - Specific element IDs and data attributes
+   - Class names used in forms
+   - Button text and labels
+   - Route definitions
+
+4. **ONLY AFTER** completing exploration: Generate the test script using the ACTUAL implementation details you discovered.
+
+**DO NOT PROCEED** with script generation until you have explored the codebase and found the relevant files. Generic assumptions will cause test failures.`
     : `You are working in STANDALONE MODE. DO NOT explore files or read the codebase. Generate test scripts based ONLY on the test prompt and general web testing knowledge. Focus on common UI patterns and generic element selectors.`
 }
 
@@ -340,7 +368,7 @@ Generate a complete, runnable TypeScript file. It MUST include imports, initiali
 /**
  * Build generation prompt with test requirements
  */
-function buildGenerationPrompt(prompt: string, context?: TestContext): string {
+function buildGenerationPrompt(prompt: string, context?: TestContext, directory?: string): string {
   let fullPrompt = `Generate a browser test script using Stagehand primitives (act, extract, observe).
 
 Test requirement: ${prompt}`;
@@ -352,6 +380,19 @@ Ticket context:
 - ID: ${context.ticketId}
 - Title: ${context.ticketTitle}
 - Description: ${context.ticketDescription}`;
+  }
+
+  if (directory) {
+    fullPrompt += `
+
+**BEFORE WRITING ANY CODE**: Explore the codebase to understand:
+- Which pages/routes handle the functionality described in the test
+- What the actual form fields, buttons, and UI elements are called
+- How navigation works in this application
+- What the actual authentication flow looks like
+
+Use codebase_search, read_file, and grep tools to discover this information.
+DO NOT make assumptions about element names or page structure.`;
   }
 
   fullPrompt += `

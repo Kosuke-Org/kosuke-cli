@@ -69,24 +69,26 @@
 
 ## Utility Dependencies
 
-| Utility                    | Used By                   | Purpose                               |
-| -------------------------- | ------------------------- | ------------------------------------- |
-| **claude-agent.ts**        | All commands              | Centralized Claude SDK integration    |
-| **validator.ts**           | lint, review, ship, build | Comprehensive linting                 |
-| **git.ts**                 | review, build             | Git operations                        |
-| **github.ts**              | sync-rules, build         | GitHub API integration                |
-| **repository-manager.ts**  | getcode                   | Clone/update repos                    |
-| **repository-resolver.ts** | getcode                   | Infer repo from queries               |
-| **ticket-writer.ts**       | plan, tickets             | Shared ticket validation and writing  |
-| **tickets-manager.ts**     | ship, build, test         | Load/update tickets.json              |
-| **error-analyzer.ts**      | test                      | Analyze test/runtime failures         |
-| **log-collector.ts**       | test                      | Collect Docker/test logs              |
-| **pr-orchestrator.ts**     | sync-rules, analyse, lint | Create PRs                            |
-| **prompt-generator.ts**    | test                      | Generate web-test and db-test prompts |
-| **test-runner.ts**         | build                     | Iterative test+fix loop               |
-| **batch-creator.ts**       | analyse                   | Create file batches for processing    |
-| **file-discovery.ts**      | analyse, lint             | File scanning with .kosukeignore      |
-| **logger.ts**              | All commands              | Execution logging to Kosuke API       |
+| Utility                        | Used By                   | Purpose                                     |
+| ------------------------------ | ------------------------- | ------------------------------------------- |
+| **claude-agent.ts**            | All commands              | Centralized Claude SDK integration          |
+| **validator.ts**               | lint, review, ship, build | Comprehensive linting                       |
+| **git.ts**                     | review, build             | Git operations                              |
+| **github.ts**                  | sync-rules, build         | GitHub API integration                      |
+| **repository-manager.ts**      | getcode                   | Clone/update repos                          |
+| **repository-resolver.ts**     | getcode                   | Infer repo from queries                     |
+| **ticket-writer.ts**           | plan, tickets             | Shared ticket validation and writing        |
+| **tickets-manager.ts**         | ship, build, test         | Load/update tickets.json                    |
+| **error-analyzer.ts**          | test                      | Analyze test/runtime failures               |
+| **log-collector.ts**           | test                      | Collect Docker/test logs                    |
+| **pr-orchestrator.ts**         | sync-rules, analyse, lint | Create PRs                                  |
+| **prompt-generator.ts**        | test                      | Generate web-test and db-test prompts       |
+| **test-runner.ts**             | build                     | Iterative test+fix loop                     |
+| **granular-test-generator.ts** | test                      | Generate Stagehand scripts from prompts     |
+| **granular-test-executor.ts**  | test                      | Execute generated test scripts with retries |
+| **batch-creator.ts**           | analyse                   | Create file batches for processing          |
+| **file-discovery.ts**          | analyse, lint             | File scanning with .kosukeignore            |
+| **logger.ts**                  | All commands              | Execution logging to Kosuke API             |
 
 ## Call Graph (Nested)
 
@@ -117,8 +119,13 @@ lint
 
 test
 └── web-test (only web E2E testing supported)
-    ├── Stagehand (browser automation)
-    └── claude-agent.ts (AI-driven testing)
+    ├── Standard mode: Stagehand agent.execute() (single execution)
+    └── Granular mode (--granular flag):
+        ├── granular-test-generator.ts (generates TypeScript test script)
+        │   ├── claude-agent.ts (with codebase exploration if --directory provided)
+        │   └── Saves script to .tmp/test-scripts/
+        └── granular-test-executor.ts (executes script with retries)
+            └── Up to 3 automatic retries with script regeneration
 
 migrate (standalone or called by build after SCHEMA tickets)
 ├── claude-agent.ts (applies migrations and seeds DB)
@@ -162,19 +169,18 @@ tickets (three modes)
 
 ## External Dependencies
 
-| Command               | External Services        | Environment Variables                                              |
-| --------------------- | ------------------------ | ------------------------------------------------------------------ |
-| All commands          | Anthropic Claude API     | `ANTHROPIC_API_KEY` (required)                                     |
-| All commands          | Kosuke API (optional)    | `KOSUKE_BASE_URL`, `KOSUKE_API_KEY`, `KOSUKE_PROJECT_ID` (logging) |
-| build (default)       | GitHub API               | `GITHUB_TOKEN` (required for git commits)                          |
-| migrate               | PostgreSQL               | `POSTGRES_URL` (default: postgres://postgres:postgres@localhost)   |
-| sync-rules (--pr)     | GitHub API               | `GITHUB_TOKEN` (required)                                          |
-| analyse (--pr)        | GitHub API               | `GITHUB_TOKEN` (required)                                          |
-| lint (--pr)           | GitHub API               | `GITHUB_TOKEN` (required)                                          |
-| test (--pr)           | GitHub API               | `GITHUB_TOKEN` (required)                                          |
-| getcode               | GitHub API (optional)    | `GITHUB_TOKEN` (optional, for cloning)                             |
-| ship (schema tickets) | PostgreSQL               | `POSTGRES_URL` (from --db-url)                                     |
-| test                  | Web browser (Playwright) | -                                                                  |
+| Command               | External Services       | Environment Variables                                              |
+| --------------------- | ----------------------- | ------------------------------------------------------------------ |
+| All commands          | Anthropic Claude API    | `ANTHROPIC_API_KEY` (required)                                     |
+| All commands          | Kosuke API (optional)   | `KOSUKE_BASE_URL`, `KOSUKE_API_KEY`, `KOSUKE_PROJECT_ID` (logging) |
+| build (default)       | GitHub API              | `GITHUB_TOKEN` (required for git commits)                          |
+| migrate               | PostgreSQL              | `POSTGRES_URL` (default: postgres://postgres:postgres@localhost)   |
+| sync-rules (--pr)     | GitHub API              | `GITHUB_TOKEN` (required)                                          |
+| analyse (--pr)        | GitHub API              | `GITHUB_TOKEN` (required)                                          |
+| lint (--pr)           | GitHub API              | `GITHUB_TOKEN` (required)                                          |
+| getcode               | GitHub API (optional)   | `GITHUB_TOKEN` (optional, for cloning)                             |
+| ship (schema tickets) | PostgreSQL              | `POSTGRES_URL` (from --db-url)                                     |
+| test                  | Web browser (Stagehand) | -                                                                  |
 
 ## Command Workflow Overview
 
@@ -243,14 +249,16 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 
 ### Common Options (Multiple Commands)
 
-| Option               | Commands                         | Description                           |
-| -------------------- | -------------------------------- | ------------------------------------- |
-| `--pr`               | sync-rules, analyse, lint, test  | Create pull request with changes      |
-| `--base-branch=NAME` | sync-rules, analyse, lint, test  | Base branch for PR (default: current) |
-| `--directory=PATH`   | lint, tickets, ship, build, test | Working directory (default: cwd)      |
-| `--dir=PATH`         | tickets, ship, build, test       | Alias for --directory                 |
-| `--tickets=FILE`     | ship, build, test                | Path to tickets.json file             |
-| `--no-logs`          | All commands                     | Disable logging to Kosuke API         |
+| Option               | Commands                         | Description                                                     |
+| -------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `--pr`               | sync-rules, analyse, lint        | Create pull request with changes                                |
+| `--base-branch=NAME` | sync-rules, analyse, lint        | Base branch for PR (default: current)                           |
+| `--directory=PATH`   | lint, tickets, ship, build, test | Working directory (default: cwd)                                |
+| `--dir=PATH`         | tickets, ship, build, test       | Alias for --directory                                           |
+| `--tickets=FILE`     | ship, build                      | Path to tickets.json file                                       |
+| `--verbose`          | build, test                      | Enable verbose output (shows Claude tool usage and exploration) |
+| `--headless`         | build, test                      | Run browser in headless mode for web tests                      |
+| `--no-logs`          | All commands                     | Disable logging to Kosuke API                                   |
 
 ### Command-Specific Options
 
@@ -347,9 +355,39 @@ Commits in batches after web-test completion. Test tickets auto-retry with fixes
 - `--url=URL` - Base URL for web tests (default: http://localhost:3000)
 - `--db-url=URL` - Database URL for db tests (default: postgres://postgres:postgres@localhost:5432/postgres)
 - `--headless` - Run browser in headless mode (web-test only)
-- `--verbose` - Enable verbose output
+- `--verbose` - Enable verbose output (shows Claude tool usage and exploration)
+- `--granular` - Generate test script using act/extract/observe primitives (with 3 automatic retries)
+- `--directory=PATH` - Directory for context-aware test generation (granular mode only)
+- `--dir=PATH` - Alias for --directory
 
-Note: Atomic testing (no fixes, no retries). For test+fix workflow, use build command.
+**Granular Mode:**
+
+When `--granular` flag is used:
+
+- Claude generates an executable TypeScript test script using Stagehand primitives
+- Script is saved to `.tmp/test-scripts/` for inspection
+- Automatic retry mechanism (up to 3 attempts) with script regeneration based on execution logs
+- Two modes:
+  - **Standalone**: No directory provided → generates generic test based on prompt only
+  - **Context-aware**: Directory provided → explores codebase to understand routes, components, and UI patterns
+
+**Examples:**
+
+```bash
+# Standard mode (single execution, no script generation)
+kosuke test --prompt="Test login flow"
+
+# Granular mode - standalone (no codebase exploration)
+kosuke test --prompt="Test checkout" --granular --verbose
+
+# Granular mode - context-aware (explores codebase for accurate test generation)
+kosuke test --prompt="Test user dashboard" --granular --directory=. --verbose
+
+# With headless browser
+kosuke test --prompt="Test signup" --granular --headless
+```
+
+Note: Atomic testing (no fixes, no linting). For test+fix workflow, use build command.
 
 #### analyse
 
@@ -406,7 +444,8 @@ Each ticket in `tickets.json` has the following structure:
 
 ### Cached Files (Git Ignored)
 
-| Directory/File  | Created By | Purpose                                    |
-| --------------- | ---------- | ------------------------------------------ |
-| `.tmp/repos/`   | getcode    | Cached GitHub repositories (owner\_\_repo) |
-| `test-results/` | test       | Playwright test results and screenshots    |
+| Directory/File       | Created By        | Purpose                                       |
+| -------------------- | ----------------- | --------------------------------------------- |
+| `.tmp/repos/`        | getcode           | Cached GitHub repositories (owner\_\_repo)    |
+| `.tmp/test-scripts/` | test (--granular) | Generated Stagehand test scripts (TypeScript) |
+| `test-results/`      | test              | Stagehand test results and screenshots        |
