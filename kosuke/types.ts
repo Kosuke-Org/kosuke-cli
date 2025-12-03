@@ -172,7 +172,7 @@ export interface ReviewOptions {
 export interface TestContext {
   ticketId: string;
   ticketTitle: string;
-  ticketDescription: string;
+  ticketDescription?: string;
 }
 
 export interface ShipResult {
@@ -209,7 +209,20 @@ export interface TestOptions {
   url?: string; // Base URL for web tests (default: http://localhost:3000)
   headless?: boolean; // Run browser in headless mode (invisible)
   verbose?: boolean; // Enable verbose output
+  granular?: boolean; // Generate script with act/extract/observe primitives (default: false)
+  directory?: string; // Directory for context-aware script generation (only for granular mode)
   noLogs?: boolean;
+}
+
+export interface GranularTestStep {
+  type: 'act' | 'extract' | 'observe';
+  description: string;
+  code: string;
+}
+
+export interface GranularTestScript {
+  steps: GranularTestStep[];
+  fullCode: string; // Complete executable TypeScript code
 }
 
 export interface TestResult {

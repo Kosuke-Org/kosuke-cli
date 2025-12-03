@@ -28,6 +28,12 @@
 
 import { Stagehand } from '@browserbasehq/stagehand';
 import type { TestOptions, TestResult } from '../types.js';
+import { executeGranularScript } from '../utils/granular-test-executor.js';
+import {
+  generateGranularTestScript,
+  saveTestScript,
+  type ScriptConfig,
+} from '../utils/granular-test-generator.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
 
 /**
@@ -40,6 +46,8 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     url = 'http://localhost:3000',
     headless = false,
     verbose = false,
+    granular = false,
+    directory,
   } = options;
 
   // Validate: prompt is required
@@ -52,7 +60,7 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     );
   }
 
-  // Validate ANTHROPIC_API_KEY (required for Stagehand)
+  // Validate ANTHROPIC_API_KEY (required for Stagehand and granular mode)
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY environment variable is required for testing');
   }
@@ -66,10 +74,24 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
     console.log(`📋 Test: ${testPrompt.substring(0, 60)}${testPrompt.length > 60 ? '...' : ''}`);
   }
 
+  // GRANULAR MODE: Generate and execute act/extract/observe script
+  if (granular) {
+    return await executeGranularMode({
+      testPrompt,
+      context,
+      testIdentifier,
+      url,
+      headless,
+      verbose,
+      directory,
+    });
+  }
+
+  // STANDARD MODE: Use agent.execute()
   try {
     // Run web E2E test with Stagehand
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🧪 Running Browser Test`);
+    console.log(`🧪 Running Browser Test (Standard Mode)`);
     console.log(`${'='.repeat(60)}\n`);
 
     console.log(`🌐 URL: ${url}`);
@@ -89,6 +111,10 @@ export async function testCore(options: TestOptions): Promise<TestResult> {
 
     // Navigate to URL
     const page = stagehand.context.pages()[0];
+
+    // Attach page to stagehand for consistency
+    (stagehand as unknown as { page: typeof page }).page = page;
+
     console.log(`🌐 Navigating to ${url}...`);
     await page.goto(url);
     console.log('✅ Navigation complete\n');
@@ -153,6 +179,168 @@ Do not ask follow-up questions, trust your judgement to complete the task.`,
       },
       cost: 0,
       error: errorMessage,
+    };
+  }
+}
+
+/**
+ * Execute granular mode: Generate script with act/extract/observe, execute with retries
+ */
+async function executeGranularMode(params: {
+  testPrompt: string;
+  context?: { ticketId: string; ticketTitle: string; ticketDescription?: string };
+  testIdentifier: string;
+  url: string;
+  headless: boolean;
+  verbose: boolean;
+  directory?: string;
+}): Promise<TestResult> {
+  const { testPrompt, context, testIdentifier, url, headless, verbose, directory } = params;
+
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🧪 Running Browser Test (Granular Mode)`);
+  console.log(`${'='.repeat(60)}\n`);
+
+  console.log(`🌐 URL: ${url}`);
+  console.log(`🔍 Verbose: ${verbose ? 'enabled' : 'disabled'}`);
+  console.log(`👁️  Headless: ${headless ? 'enabled' : 'disabled'}`);
+  console.log(`📁 Directory: ${directory || 'none (standalone mode)'}\n`);
+
+  // Track total tokens and cost across all attempts
+  const totalTokens = {
+    input: 0,
+    output: 0,
+    cacheCreation: 0,
+    cacheRead: 0,
+  };
+  let totalCost = 0;
+
+  // Script configuration (injected into generated script)
+  const scriptConfig: ScriptConfig = {
+    url,
+    headless,
+    verbose,
+  };
+
+  // Generate initial script
+  const generationResult = await generateGranularTestScript(
+    testPrompt,
+    scriptConfig,
+    context,
+    directory
+  );
+  let script = generationResult.script;
+
+  // Track generation tokens/cost
+  totalTokens.input += generationResult.tokensUsed.input;
+  totalTokens.output += generationResult.tokensUsed.output;
+  totalTokens.cacheCreation += generationResult.tokensUsed.cacheCreation;
+  totalTokens.cacheRead += generationResult.tokensUsed.cacheRead;
+  totalCost += generationResult.cost;
+
+  // Save script and get filepath
+  const scriptPath = saveTestScript(script, testIdentifier);
+
+  // Execute with retry logic (max 3 attempts)
+  let attempts = 0;
+  let lastError: string | undefined;
+  let lastLogs: string | undefined;
+  let executionResult;
+  let currentScriptPath = scriptPath;
+
+  while (attempts < 3) {
+    attempts++;
+
+    if (attempts > 1) {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🔄 Regenerating script based on execution logs (Attempt ${attempts}/3)`);
+      console.log(`${'='.repeat(60)}\n`);
+
+      // Regenerate with FULL logs context (not just error string)
+      const retryPrompt = `${testPrompt}
+
+CRITICAL: The previous test script failed. Here are the COMPLETE execution logs showing what happened:
+
+${'='.repeat(60)}
+EXECUTION LOGS:
+${'='.repeat(60)}
+${lastLogs || 'No logs available'}
+${'='.repeat(60)}
+
+ANALYSIS TASK:
+1. Review the execution logs carefully
+2. Identify which elements were selected (look for "elementId" and accessibility tree)
+3. Determine if wrong elements were clicked due to vague instructions
+4. Check if there were multiple similar elements (e.g., "Log in" in nav vs "Sign In" in form)
+5. Generate a CORRECTED script with MORE SPECIFIC element descriptions
+
+REQUIREMENTS FOR CORRECTED SCRIPT:
+- Use LOCATION and CONTEXT in act() instructions (e.g., "click the Sign In button in the form")
+- Avoid vague descriptions that could match multiple elements
+- Add sufficient waits between actions (use explicit setTimeout delays)
+- If logs show "waitForLoadState(networkidle) timed out", REPLACE with:
+  * await new Promise(resolve => setTimeout(resolve, 2000)); OR
+  * await page.waitForLoadState('domcontentloaded');
+- Modern web apps often have continuous network activity - avoid networkidle waits
+- Ensure all CRITICAL REQUIREMENTS are followed
+
+Generate a corrected script that will execute successfully.`;
+
+      const retryGeneration = await generateGranularTestScript(
+        retryPrompt,
+        scriptConfig,
+        context,
+        directory
+      );
+      script = retryGeneration.script;
+
+      // Track retry generation tokens/cost
+      totalTokens.input += retryGeneration.tokensUsed.input;
+      totalTokens.output += retryGeneration.tokensUsed.output;
+      totalTokens.cacheCreation += retryGeneration.tokensUsed.cacheCreation;
+      totalTokens.cacheRead += retryGeneration.tokensUsed.cacheRead;
+      totalCost += retryGeneration.cost;
+
+      currentScriptPath = saveTestScript(script, `${testIdentifier}-retry${attempts - 1}`);
+    }
+
+    // Execute script (it handles its own Stagehand init/close)
+    console.log(`🚀 Executing test script (Attempt ${attempts}/3)...\n`);
+    executionResult = await executeGranularScript(currentScriptPath, verbose);
+
+    if (executionResult.success) {
+      break; // Success - exit retry loop
+    }
+
+    lastError = executionResult.errors[0];
+    lastLogs = executionResult.logs; // Capture FULL logs for retry analysis
+  }
+
+  // Return result
+  if (executionResult?.success) {
+    return {
+      ticketId: testIdentifier,
+      success: true,
+      output: executionResult.output,
+      logs: {
+        console: [],
+        errors: [],
+      },
+      tokensUsed: totalTokens,
+      cost: totalCost,
+    };
+  } else {
+    return {
+      ticketId: testIdentifier,
+      success: false,
+      output: executionResult?.output || 'Test script generation/execution failed',
+      logs: {
+        console: [],
+        errors: executionResult?.errors || ['Unknown error'],
+      },
+      tokensUsed: totalTokens,
+      cost: totalCost,
+      error: lastError || 'Test failed after 3 attempts',
     };
   }
 }

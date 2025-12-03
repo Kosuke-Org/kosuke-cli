@@ -205,10 +205,17 @@ async function main() {
           );
           console.log('  --headless           Run in headless mode (invisible browser)');
           console.log('  --verbose            Enable verbose output');
-          console.log('  --directory=PATH     Directory to test (default: cwd)');
+          console.log('  --granular           Generate script with act/extract/observe primitives');
+          console.log(
+            '  --directory=PATH     Directory for context-aware generation (granular mode only)'
+          );
           console.log('\nExamples:');
           console.log('  kosuke test --prompt="Test user login flow"');
           console.log('  kosuke test --prompt="Test task creation" --verbose --headless');
+          console.log('  kosuke test --prompt="Test checkout" --granular  # Standalone mode');
+          console.log(
+            '  kosuke test --prompt="Test checkout" --granular --directory=.  # With repo context'
+          );
           console.log('\nNote: This command is mainly used programmatically from kosuke build.');
           console.log('      For ticket-based testing with retries, use: kosuke build');
           process.exit(1);
@@ -219,6 +226,7 @@ async function main() {
           url: args.find((arg) => arg.startsWith('--url='))?.split('=')[1],
           headless: args.includes('--headless'),
           verbose: args.includes('--verbose'),
+          granular: args.includes('--granular'),
           directory:
             args.find((arg) => arg.startsWith('--directory='))?.split('=')[1] ||
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
@@ -341,7 +349,7 @@ COMMANDS:
 
   tickets [options]
     Generate implementation tickets from requirements document or prompt
-    
+
     Two modes of operation:
 
     PROMPT MODE (--prompt flag):
@@ -443,8 +451,9 @@ COMMANDS:
   test --prompt="..." [options]
     Run atomic web E2E tests (no fixing, no retries)
 
-    Test type:
-      - web-test: Browser E2E testing with Stagehand + Claude AI
+    Test modes:
+      - Standard: High-level agent.execute() (autonomous testing)
+      - Granular: Generate script with act/extract/observe primitives (--granular flag)
 
     For iterative test+fix workflow, use: kosuke build
 
@@ -453,14 +462,31 @@ COMMANDS:
       --url=<URL>           Base URL for web tests (default: http://localhost:3000)
       --headless            Run browser in headless mode (invisible)
       --verbose             Enable verbose output
-      --directory=<path>    Directory to run tests in (default: current directory)
+      --granular            Generate test script using act/extract/observe primitives
+      --directory=<path>    Directory for context-aware generation (granular mode only)
       --dir=<path>          Alias for --directory
 
     Examples:
+      # Standard mode (high-level agent)
       kosuke test --prompt="Test user login flow"
       kosuke test --prompt="Test task creation" --url=http://localhost:4000
-      kosuke test --prompt="..." --verbose --headless
-      kosuke test --prompt="..." --directory=./my-project
+
+      # Granular mode (standalone - no repo context)
+      kosuke test --prompt="Test checkout flow" --granular
+
+      # Granular mode (with repo context)
+      kosuke test --prompt="Test checkout flow" --granular --directory=.
+      kosuke test --prompt="..." --granular --directory=./my-project
+
+    Granular mode:
+      - Generates executable TypeScript script with Stagehand primitives
+      - Scripts saved to .tmp/test-scripts/ for debugging
+      - Automatically retries on failure with error-aware regeneration
+      - More fine-grained control and visibility into test steps
+
+      Two modes:
+      • Standalone (no --directory): Claude generates scripts based only on prompt
+      • Context-aware (with --directory): Claude explores codebase first
 
     Note: This command is mainly used programmatically from kosuke build.
           For ticket-based testing with retries, use: kosuke build
