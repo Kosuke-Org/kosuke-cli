@@ -21,7 +21,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { glob } from 'glob';
-import type { PlanOptions, Ticket } from '../types.js';
+import type {
+  MessageAttachmentPayload,
+  PlanOptions,
+  SupportedImageMediaType,
+  Ticket,
+} from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
@@ -64,14 +69,6 @@ export interface PlanResult {
   };
   cost: number;
   error?: string;
-}
-
-/**
- * Session state for interactive mode
- */
-interface PlanSession {
-  prompt: string;
-  messages: Anthropic.MessageParam[];
 }
 
 /**
@@ -555,202 +552,481 @@ function formatTokenUsage(
 }
 
 /**
- * Process a single Claude interaction with streaming
- * Handles multiple tool calls in a loop until Claude stops calling tools
+ * Plan stream event names
  */
-async function processClaudeInteraction(
-  messages: Anthropic.MessageParam[],
-  systemPrompt: string,
-  cwd: string
-): Promise<{
-  response: string;
-  messages: Anthropic.MessageParam[];
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  tickets: Ticket[];
-  ticketsCreated: boolean;
-}> {
+export const PlanEventName = {
+  TEXT_DELTA: 'text_delta',
+  TOOL_USE: 'tool_use',
+  TOOL_RESULT: 'tool_result',
+  CLARIFICATION: 'clarification',
+  TICKETS_GENERATED: 'tickets_generated',
+  COMPLETE: 'complete',
+  ERROR: 'error',
+} as const;
+
+export type PlanEventNameType = (typeof PlanEventName)[keyof typeof PlanEventName];
+
+/**
+ * Event types for streaming plan execution
+ */
+export type PlanStreamEventType =
+  | { type: typeof PlanEventName.TEXT_DELTA; content: string }
+  | {
+      type: typeof PlanEventName.TOOL_USE;
+      toolName: string;
+      toolId: string;
+      input: Record<string, unknown>;
+    }
+  | { type: typeof PlanEventName.TOOL_RESULT; toolId: string; result: string; isError: boolean }
+  | {
+      type: typeof PlanEventName.CLARIFICATION;
+      question: string;
+      sendAnswer: (answer: string) => void;
+    }
+  | { type: typeof PlanEventName.TICKETS_GENERATED; tickets: Ticket[]; ticketsPath: string }
+  | {
+      type: typeof PlanEventName.COMPLETE;
+      tickets: Ticket[];
+      ticketsPath: string;
+      tokensUsed: PlanResult['tokensUsed'];
+      cost: number;
+    }
+  | { type: typeof PlanEventName.ERROR; message: string };
+
+/**
+ * Options for streaming plan execution
+ */
+export interface PlanStreamingOptions {
+  /** Feature or bug description */
+  prompt: string;
+  /** Project directory path */
+  directory?: string;
+  /** Skip WEB-TEST ticket generation */
+  noTest?: boolean;
+  /** Custom tickets output path (optional, defaults to tickets/{timestamp}.ticket.json) */
+  ticketsPath?: string;
+  /** Optional attachments (images, PDFs) for context - web integration only */
+  attachments?: MessageAttachmentPayload[];
+  /** Optional conversation history for resuming after clarification */
+  conversationHistory?: Anthropic.MessageParam[];
+}
+
+/**
+ * Check if a media type is a supported image type for Claude API
+ */
+function isSupportedImageMediaType(mediaType: string): mediaType is SupportedImageMediaType {
+  return (
+    mediaType === 'image/jpeg' ||
+    mediaType === 'image/png' ||
+    mediaType === 'image/gif' ||
+    mediaType === 'image/webp'
+  );
+}
+
+/**
+ * Build the initial user message with optional attachments
+ * Creates properly typed content blocks for images, documents, and text
+ * Uses public URLs for file attachments (Claude fetches from URL)
+ */
+function buildInitialMessage(
+  prompt: string,
+  attachments?: MessageAttachmentPayload[]
+): Anthropic.MessageParam {
+  // If no attachments, return simple string content
+  if (!attachments || attachments.length === 0) {
+    return { role: 'user', content: prompt };
+  }
+
+  // Build content blocks array for user message with attachments
+  type UserContentBlock = Exclude<Anthropic.MessageParam['content'], string>[number];
+  const contentBlocks: UserContentBlock[] = [];
+
+  // Add text block first
+  if (prompt.trim()) {
+    contentBlocks.push({
+      type: 'text',
+      text: prompt.trim(),
+    });
+  }
+
+  // Add image or document blocks for all attachments using public URLs
+  for (const attachment of attachments) {
+    const { upload } = attachment;
+
+    if (upload.fileType === 'image') {
+      if (isSupportedImageMediaType(upload.mediaType)) {
+        contentBlocks.push({
+          type: 'image',
+          source: {
+            type: 'url',
+            url: upload.fileUrl,
+          },
+        });
+      } else {
+        // Fallback for unsupported image types - add as text reference
+        contentBlocks.push({
+          type: 'text',
+          text: `Attached image available at ${upload.fileUrl}`,
+        });
+      }
+    } else if (upload.fileType === 'document') {
+      contentBlocks.push({
+        type: 'document',
+        source: {
+          type: 'url',
+          url: upload.fileUrl,
+        },
+      });
+    }
+  }
+
+  return { role: 'user', content: contentBlocks };
+}
+
+/**
+ * Streaming plan execution - the core implementation
+ *
+ * This AsyncGenerator is the single source of truth for planning logic.
+ * Both CLI and web integrations consume this stream.
+ *
+ * @example
+ * ```ts
+ * // Web usage
+ * for await (const event of planCoreStreaming({ prompt, directory })) {
+ *   if (event.type === 'text_delta') {
+ *     sendToClient(event.content);
+ *   } else if (event.type === 'clarification') {
+ *     showQuestion(event.question);
+ *     // Later when user responds:
+ *     event.sendAnswer(userInput);
+ *   } else if (event.type === 'complete') {
+ *     showSuccess(event.tickets, event.cost);
+ *   }
+ * }
+ * ```
+ */
+export async function* planCoreStreaming(
+  options: PlanStreamingOptions
+): AsyncGenerator<PlanStreamEventType> {
+  const {
+    prompt,
+    directory,
+    noTest = false,
+    ticketsPath: customTicketsPath,
+    attachments,
+    conversationHistory,
+  } = options;
+
+  // Validate directory
+  const cwd = directory ? resolve(directory) : process.cwd();
+
+  if (!existsSync(cwd)) {
+    yield { type: 'error', message: `Directory not found: ${cwd}` };
+    return;
+  }
+
+  const stats = statSync(cwd);
+  if (!stats.isDirectory()) {
+    yield { type: 'error', message: `Path is not a directory: ${cwd}` };
+    return;
+  }
+
+  const ticketsPath = customTicketsPath || generateTicketsPath(cwd);
+
+  // Read CLAUDE.md and build system prompt
+  const claudeMdContent = readClaudeMd(cwd);
+  const systemPrompt = buildPlanSystemPrompt(claudeMdContent, noTest);
+
   const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
-  let responseText = '';
-  let tickets: Ticket[] = [];
-  let ticketsCreated = false;
+  // Use conversation history if resuming, otherwise build initial message
+  let messages: Anthropic.MessageParam[];
+  if (conversationHistory && conversationHistory.length > 0) {
+    // Resuming conversation - append the new user message to history
+    messages = [...conversationHistory, { role: 'user', content: prompt }];
+  } else {
+    // New conversation - build initial message with optional attachments
+    const initialMessage = buildInitialMessage(prompt, attachments);
+    messages = [initialMessage];
+  }
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreationTokens = 0;
   let totalCacheReadTokens = 0;
-  let isFirstOutput = true;
+  let finalTickets: Ticket[] = [];
 
-  // Loop until Claude stops calling tools
-  const maxIterations = 20; // Safety limit
+  const maxIterations = 50; // Safety limit for entire session
   let iterations = 0;
 
-  while (iterations < maxIterations) {
-    iterations++;
+  try {
+    sessionLoop: while (iterations < maxIterations) {
+      iterations++;
 
-    // Stream the response
-    const stream = await anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8096,
-      system: systemPrompt,
-      tools: PLAN_TOOLS,
-      messages,
-    });
+      // Inner loop: process Claude response and tools until we need user input or complete
+      let needsUserInput = false;
 
-    let currentText = '';
-    const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+      while (!needsUserInput && iterations < maxIterations) {
+        // Stream the response
+        const stream = await anthropic.messages.stream({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 8096,
+          system: systemPrompt,
+          tools: PLAN_TOOLS,
+          messages,
+        });
 
-    // Process stream events
-    for await (const event of stream) {
-      if (event.type === 'content_block_start') {
-        if (event.content_block.type === 'text') {
-          if (isFirstOutput) {
-            process.stdout.write('\n> Claude:\n');
-            isFirstOutput = false;
+        let currentText = '';
+        const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+
+        // Process stream events - yield text deltas
+        for await (const event of stream) {
+          if (event.type === 'content_block_delta') {
+            if (event.delta.type === 'text_delta') {
+              const delta = event.delta.text;
+              currentText += delta;
+              yield { type: 'text_delta', content: delta };
+            }
           }
         }
-      } else if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          const delta = event.delta.text;
-          currentText += delta;
-          process.stdout.write(delta);
+
+        // Get final message
+        const finalMessage = await stream.finalMessage();
+
+        // Track token usage
+        const usage = finalMessage.usage as unknown as {
+          input_tokens: number;
+          output_tokens: number;
+          cache_creation_input_tokens?: number;
+          cache_read_input_tokens?: number;
+        };
+        totalInputTokens += usage.input_tokens;
+        totalOutputTokens += usage.output_tokens;
+        totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
+        totalCacheReadTokens += usage.cache_read_input_tokens || 0;
+
+        // Extract tool uses
+        for (const block of finalMessage.content) {
+          if (block.type === 'tool_use') {
+            toolUses.push({
+              id: block.id,
+              name: block.name,
+              input: block.input as Record<string, unknown>,
+            });
+          }
+        }
+
+        // Update messages with assistant response
+        messages = [...messages, { role: 'assistant', content: finalMessage.content }];
+
+        // If no tools called, check if we need clarification
+        if (toolUses.length === 0) {
+          // Check if the response contains clarification questions
+          if (
+            currentText.includes('Clarification Questions') ||
+            currentText.includes('Quick Option')
+          ) {
+            // Create a promise that will be resolved when answer is provided
+            let resolveAnswer: ((answer: string) => void) | null = null;
+            const answerPromise = new Promise<string>((resolve) => {
+              resolveAnswer = resolve;
+            });
+
+            yield {
+              type: 'clarification',
+              question: currentText,
+              sendAnswer: (answer: string) => {
+                if (resolveAnswer) resolveAnswer(answer);
+              },
+            };
+
+            // Wait for answer
+            const answer = await answerPromise;
+            messages = [...messages, { role: 'user', content: answer }];
+            needsUserInput = false; // Continue processing with the answer
+            continue;
+          }
+
+          // No clarification needed and no tools - we're done with this iteration
+          break;
+        }
+
+        // Execute tools
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+        for (const tool of toolUses) {
+          // Emit tool_use event before execution
+          yield { type: 'tool_use', toolName: tool.name, toolId: tool.id, input: tool.input };
+
+          if (tool.name === 'read_file') {
+            const result = executeReadFile(tool.input, cwd);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: result.content,
+            });
+            // Emit tool_result event after execution
+            yield {
+              type: 'tool_result',
+              toolId: tool.id,
+              result: 'File read successfully',
+              isError: false,
+            };
+          } else if (tool.name === 'list_directory') {
+            const result = executeListDirectory(tool.input, cwd);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: result.content,
+            });
+            yield {
+              type: 'tool_result',
+              toolId: tool.id,
+              result: 'Directory listed',
+              isError: false,
+            };
+          } else if (tool.name === 'glob_search') {
+            const result = await executeGlobSearch(tool.input, cwd);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: result.content,
+            });
+            yield {
+              type: 'tool_result',
+              toolId: tool.id,
+              result: 'Search completed',
+              isError: false,
+            };
+          } else if (tool.name === 'write_tickets') {
+            const result = executeWriteTickets(tool.input);
+
+            if (result.success) {
+              // Validate and write tickets to disk
+              const { tickets: validatedTickets } = await processAndWriteTickets(
+                result.tickets,
+                ticketsPath,
+                cwd,
+                { displaySummary: false }
+              );
+              finalTickets = validatedTickets;
+
+              yield { type: 'tickets_generated', tickets: validatedTickets, ticketsPath };
+              yield {
+                type: 'tool_result',
+                toolId: tool.id,
+                result: 'Tickets written',
+                isError: false,
+              };
+            } else {
+              yield { type: 'tool_result', toolId: tool.id, result: result.message, isError: true };
+            }
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tool.id,
+              content: result.message,
+            });
+          }
+        }
+
+        messages = [...messages, { role: 'user', content: toolResults }];
+
+        // If tickets were created, get final response and complete
+        if (finalTickets.length > 0) {
+          const followupStream = await anthropic.messages.stream({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 8096,
+            system: systemPrompt,
+            tools: PLAN_TOOLS,
+            messages,
+          });
+
+          for await (const event of followupStream) {
+            if (event.type === 'content_block_delta') {
+              if (event.delta.type === 'text_delta') {
+                yield { type: 'text_delta', content: event.delta.text };
+              }
+            }
+          }
+
+          const followupMessage = await followupStream.finalMessage();
+          const followupUsage = followupMessage.usage as unknown as {
+            input_tokens: number;
+            output_tokens: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          };
+          totalInputTokens += followupUsage.input_tokens;
+          totalOutputTokens += followupUsage.output_tokens;
+          totalCacheCreationTokens += followupUsage.cache_creation_input_tokens || 0;
+          totalCacheReadTokens += followupUsage.cache_read_input_tokens || 0;
+
+          // Calculate final cost and complete
+          const cost = calculateCost(
+            totalInputTokens,
+            totalOutputTokens,
+            totalCacheCreationTokens,
+            totalCacheReadTokens
+          );
+
+          yield {
+            type: 'complete',
+            tickets: finalTickets,
+            ticketsPath,
+            tokensUsed: {
+              input: totalInputTokens,
+              output: totalOutputTokens,
+              cacheCreation: totalCacheCreationTokens,
+              cacheRead: totalCacheReadTokens,
+            },
+            cost,
+          };
+
+          return;
         }
       }
+
+      // If we exit inner loop without completing, break session loop
+      break sessionLoop;
     }
 
-    responseText += currentText;
+    // If we reach here without tickets, yield complete with empty tickets
+    const cost = calculateCost(
+      totalInputTokens,
+      totalOutputTokens,
+      totalCacheCreationTokens,
+      totalCacheReadTokens
+    );
 
-    // Get final message
-    const finalMessage = await stream.finalMessage();
-
-    // Track token usage
-    const usage = finalMessage.usage as unknown as {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
+    yield {
+      type: 'complete',
+      tickets: finalTickets,
+      ticketsPath,
+      tokensUsed: {
+        input: totalInputTokens,
+        output: totalOutputTokens,
+        cacheCreation: totalCacheCreationTokens,
+        cacheRead: totalCacheReadTokens,
+      },
+      cost,
     };
-    totalInputTokens += usage.input_tokens;
-    totalOutputTokens += usage.output_tokens;
-    totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
-    totalCacheReadTokens += usage.cache_read_input_tokens || 0;
-
-    // Extract tool uses
-    for (const block of finalMessage.content) {
-      if (block.type === 'tool_use') {
-        toolUses.push({
-          id: block.id,
-          name: block.name,
-          input: block.input as Record<string, unknown>,
-        });
-      }
-    }
-
-    // If no tools called, we're done
-    if (toolUses.length === 0) {
-      messages = [...messages, { role: 'assistant', content: finalMessage.content }];
-      break;
-    }
-
-    // Execute tools
-    messages = [...messages, { role: 'assistant', content: finalMessage.content }];
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const tool of toolUses) {
-      if (tool.name === 'read_file') {
-        const result = executeReadFile(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'list_directory') {
-        const result = executeListDirectory(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'glob_search') {
-        const result = await executeGlobSearch(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'write_tickets') {
-        const result = executeWriteTickets(tool.input);
-        tickets = result.tickets;
-        ticketsCreated = result.success;
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.message,
-        });
-      }
-    }
-
-    messages = [...messages, { role: 'user', content: toolResults }];
-
-    // If tickets were created, get final response and stop
-    if (ticketsCreated) {
-      const followupStream = await anthropic.messages.stream({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 8096,
-        system: systemPrompt,
-        tools: PLAN_TOOLS,
-        messages,
-      });
-
-      let followupText = '';
-      for await (const event of followupStream) {
-        if (event.type === 'content_block_delta') {
-          if (event.delta.type === 'text_delta') {
-            const delta = event.delta.text;
-            followupText += delta;
-            process.stdout.write(delta);
-          }
-        }
-      }
-
-      const followupMessage = await followupStream.finalMessage();
-      responseText += '\n' + followupText;
-      messages = [...messages, { role: 'assistant', content: followupMessage.content }];
-
-      // Add followup token usage
-      const followupUsage = followupMessage.usage as unknown as {
-        input_tokens: number;
-        output_tokens: number;
-        cache_creation_input_tokens?: number;
-        cache_read_input_tokens?: number;
-      };
-      totalInputTokens += followupUsage.input_tokens;
-      totalOutputTokens += followupUsage.output_tokens;
-      totalCacheCreationTokens += followupUsage.cache_creation_input_tokens || 0;
-      totalCacheReadTokens += followupUsage.cache_read_input_tokens || 0;
-
-      break;
-    }
+  } catch (error) {
+    yield {
+      type: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
-
-  return {
-    response: responseText,
-    messages,
-    inputTokens: totalInputTokens,
-    outputTokens: totalOutputTokens,
-    cacheCreationTokens: totalCacheCreationTokens,
-    cacheReadTokens: totalCacheReadTokens,
-    tickets,
-    ticketsCreated,
-  };
 }
 
 /**
- * Interactive planning session
+ * Interactive planning session - CLI wrapper around planCoreStreaming
+ *
+ * Consumes the streaming generator and handles:
+ * - Terminal output (stdout)
+ * - User input (stdin via askQuestion)
+ * - Ctrl+C handling
  */
 async function interactivePlanSession(
   initialPrompt: string,
@@ -759,7 +1035,6 @@ async function interactivePlanSession(
   logContext?: ReturnType<typeof logger.createContext>,
   noTest: boolean = false
 ): Promise<{
-  messages: Anthropic.MessageParam[];
   tickets: Ticket[];
   tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
   cost: number;
@@ -775,13 +1050,12 @@ async function interactivePlanSession(
   );
   console.log('🤖 Claude will explore your codebase to understand patterns and conventions.\n');
 
-  // Read CLAUDE.md and inject into system prompt
-  const claudeMdContent = readClaudeMd(cwd);
-  if (claudeMdContent) {
-    console.log(`📖 Loaded CLAUDE.md (${Math.round(claudeMdContent.length / 1000)}k chars)\n`);
+  // Check for CLAUDE.md
+  const claudeMdPath = join(cwd, 'CLAUDE.md');
+  if (existsSync(claudeMdPath)) {
+    const content = readFileSync(claudeMdPath, 'utf-8');
+    console.log(`📖 Loaded CLAUDE.md (${Math.round(content.length / 1000)}k chars)\n`);
   }
-
-  const systemPrompt = buildPlanSystemPrompt(claudeMdContent, noTest);
 
   console.log(`${'─'.repeat(60)}`);
   console.log('🤖 Using model: claude-sonnet-4-5');
@@ -799,126 +1073,105 @@ async function interactivePlanSession(
   };
   process.on('SIGINT', handleSigInt);
 
-  const session: PlanSession = {
-    prompt: initialPrompt,
-    messages: [],
-  };
-
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheCreationTokens = 0;
-  let totalCacheReadTokens = 0;
-  let totalCost = 0;
   let finalTickets: Ticket[] = [];
+  let finalTokensUsed = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+  let finalCost = 0;
+  let isFirstTextOutput = true;
 
   try {
-    // Start with initial prompt
-    session.messages.push({ role: 'user', content: initialPrompt });
+    console.log('\n🤔 Claude is analyzing...\n');
 
-    let continueConversation = true;
+    // Consume the streaming generator
+    for await (const event of planCoreStreaming({
+      prompt: initialPrompt,
+      directory: cwd,
+      noTest,
+      ticketsPath,
+    })) {
+      switch (event.type) {
+        case 'text_delta':
+          // First text output - print header
+          if (isFirstTextOutput) {
+            process.stdout.write('\n> Claude:\n');
+            isFirstTextOutput = false;
+          }
+          process.stdout.write(event.content);
+          break;
 
-    while (continueConversation) {
-      console.log('\n🤔 Claude is analyzing...\n');
+        case 'clarification':
+          // Reset for next Claude response
+          isFirstTextOutput = true;
 
-      const result = await processClaudeInteraction(session.messages, systemPrompt, cwd);
+          // Show cost so far (we don't have intermediate costs in streaming, skip for now)
+          console.log('\n');
 
-      session.messages = result.messages;
+          // Ask for user response
+          console.log('💬 Your response (type "exit" to quit):\n');
+          const userResponse = await askQuestion('You: ');
 
-      // Track costs
-      totalInputTokens += result.inputTokens;
-      totalOutputTokens += result.outputTokens;
-      totalCacheCreationTokens += result.cacheCreationTokens;
-      totalCacheReadTokens += result.cacheReadTokens;
-      const batchCost = calculateCost(
-        result.inputTokens,
-        result.outputTokens,
-        result.cacheCreationTokens,
-        result.cacheReadTokens
-      );
-      totalCost += batchCost;
+          if (!userResponse) {
+            console.log('\n⚠️  Empty response. Please provide an answer or type "exit".');
+            event.sendAnswer('go with recommendations');
+          } else if (userResponse.toLowerCase() === 'exit') {
+            console.log('\n👋 Exiting planning session.\n');
+            // Send empty to trigger completion
+            event.sendAnswer('exit');
+          } else {
+            console.log('\n🤔 Claude is analyzing...\n');
+            event.sendAnswer(userResponse);
+          }
+          break;
 
-      // Display cost
-      console.log('\n' + '─'.repeat(90));
-      console.log(
-        formatTokenUsage(
-          result.inputTokens,
-          result.outputTokens,
-          result.cacheCreationTokens,
-          result.cacheReadTokens,
-          batchCost
-        )
-      );
-      console.log('─'.repeat(90) + '\n');
+        case 'tickets_generated':
+          console.log(`\n\n📋 Generated ${event.tickets.length} ticket(s)`);
+          console.log(`📁 Saved to: ${event.ticketsPath}\n`);
 
-      // Check if tickets were created
-      if (result.ticketsCreated) {
-        // Validate and write tickets using shared utility
-        const { tickets: validatedTickets } = await processAndWriteTickets(
-          result.tickets,
-          ticketsPath,
-          cwd,
-          { displaySummary: true }
-        );
-        finalTickets = validatedTickets;
+          // Display ticket summary
+          for (const ticket of event.tickets) {
+            console.log(`   • ${ticket.id}: ${ticket.title}`);
+          }
+          break;
 
-        console.log('═'.repeat(90));
-        console.log('📊 Total Session Cost:');
-        console.log(
-          formatTokenUsage(
-            totalInputTokens,
-            totalOutputTokens,
-            totalCacheCreationTokens,
-            totalCacheReadTokens,
-            totalCost
-          )
-        );
-        console.log('═'.repeat(90));
-        // Get relative path for cleaner output
-        const relativeTicketsPath = ticketsPath.replace(cwd + '/', '');
-        console.log('\n🎉 Planning complete!\n');
-        console.log('💡 Next steps:');
-        console.log('   - Review tickets: cat "' + ticketsPath + '"');
-        console.log(
-          '   - Build tickets: kosuke build --directory="' +
-            cwd +
-            '" --tickets="' +
-            relativeTicketsPath +
-            '"'
-        );
-        console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
-        continueConversation = false;
-        break;
+        case 'complete':
+          finalTickets = event.tickets;
+          finalTokensUsed = event.tokensUsed;
+          finalCost = event.cost;
+
+          console.log('\n' + '═'.repeat(90));
+          console.log('📊 Total Session Cost:');
+          console.log(
+            formatTokenUsage(
+              event.tokensUsed.input,
+              event.tokensUsed.output,
+              event.tokensUsed.cacheCreation,
+              event.tokensUsed.cacheRead,
+              event.cost
+            )
+          );
+          console.log('═'.repeat(90));
+
+          if (event.tickets.length > 0) {
+            const relativeTicketsPath = event.ticketsPath.replace(cwd + '/', '');
+            console.log('\n🎉 Planning complete!\n');
+            console.log('💡 Next steps:');
+            console.log('   - Review tickets: cat "' + event.ticketsPath + '"');
+            console.log(
+              '   - Build tickets: kosuke build --directory="' +
+                cwd +
+                '" --tickets="' +
+                relativeTicketsPath +
+                '"'
+            );
+            console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
+          } else {
+            console.log('\n👋 Session ended without generating tickets.\n');
+          }
+          break;
+
+        case 'error':
+          console.error(`\n❌ Error: ${event.message}`);
+          throw new Error(event.message);
       }
-
-      // Ask for user response
-      console.log('💬 Your response (type "exit" to quit):\n');
-      const userResponse = await askQuestion('You: ');
-
-      if (!userResponse) {
-        console.log('\n⚠️  Empty response. Please provide an answer or type "exit".');
-        continue;
-      }
-
-      if (userResponse.toLowerCase() === 'exit') {
-        console.log('\n👋 Exiting planning session.\n');
-        console.log('═'.repeat(90));
-        console.log('📊 Session Cost:');
-        console.log(
-          formatTokenUsage(
-            totalInputTokens,
-            totalOutputTokens,
-            totalCacheCreationTokens,
-            totalCacheReadTokens,
-            totalCost
-          )
-        );
-        console.log('═'.repeat(90) + '\n');
-        continueConversation = false;
-        break;
-      }
-
-      // Add user response to messages
-      session.messages = [...session.messages, { role: 'user', content: userResponse }];
     }
   } catch (error) {
     console.error('\n❌ Error during planning:', error);
@@ -928,20 +1181,16 @@ async function interactivePlanSession(
   }
 
   return {
-    messages: session.messages,
     tickets: finalTickets,
-    tokensUsed: {
-      input: totalInputTokens,
-      output: totalOutputTokens,
-      cacheCreation: totalCacheCreationTokens,
-      cacheRead: totalCacheReadTokens,
-    },
-    cost: totalCost,
+    tokensUsed: finalTokensUsed,
+    cost: finalCost,
   };
 }
 
 /**
- * Core plan function for programmatic use
+ * Core plan function for programmatic use (CLI mode with stdin/stdout)
+ *
+ * For web/programmatic use without terminal I/O, use planCoreStreaming instead.
  */
 export async function planCore(options: PlanOptions): Promise<PlanResult> {
   const { prompt, directory, noTest = false } = options;

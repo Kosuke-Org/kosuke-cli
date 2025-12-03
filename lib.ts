@@ -74,11 +74,15 @@ export { analyseCommand } from './kosuke/commands/analyse.js';
 export { lintCommand, fixCodeQualityErrors, fixLintErrors } from './kosuke/commands/lint.js';
 export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 export { requirementsCommand, requirementsCore } from './kosuke/commands/requirements.js';
-export { planCommand, planCore } from './kosuke/commands/plan.js';
+export { planCommand, planCore, planCoreStreaming } from './kosuke/commands/plan.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCore } from './kosuke/commands/ship.js';
-export { buildCommand } from './kosuke/commands/build.js';
+export {
+  buildCommand,
+  buildCoreStreaming,
+  sortTicketsByProcessingOrder,
+} from './kosuke/commands/build.js';
 export { migrateCommand, migrateCore } from './kosuke/commands/migrate.js';
 export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
 export { testCommand, testCore } from './kosuke/commands/test.js';
@@ -101,10 +105,13 @@ export { validateRepoAccess } from './kosuke/utils/repository-resolver.js';
 export { logger, withCommandTracking, setupCancellationHandler } from './kosuke/utils/logger.js';
 export { askQuestion } from './kosuke/utils/interactive-input.js';
 export {
+  loadTicketsFile,
+  saveTicketsFile,
+  writeTicketsFile,
+  updateTicketStatus,
   parseTickets,
   sortTicketsByOrder,
   validateAndFixTickets,
-  writeTicketsFile,
   displayTicketsSummary,
   processAndWriteTickets,
 } from './kosuke/utils/tickets-manager.js';
@@ -137,6 +144,10 @@ export type {
   TestResult,
   TestRunnerOptions,
   TestRunnerResult,
+  FileType,
+  SupportedImageMediaType,
+  UploadResult,
+  MessageAttachmentPayload,
   // Testing utility types
   AnalysisResult,
   TestFailure,
@@ -154,8 +165,21 @@ export type {
 export type { ValidationResult } from './kosuke/utils/validator.js';
 export type { AgentVerbosity, AgentConfig, AgentResult } from './kosuke/utils/claude-agent.js';
 export type { RequirementsOptions, RequirementsResult } from './kosuke/commands/requirements.js';
-export type { PlanResult } from './kosuke/commands/plan.js';
-export type { TicketReviewResult } from './kosuke/utils/tickets-manager.js';
+export {
+  PlanEventName,
+  type PlanEventNameType,
+  type PlanResult,
+  type PlanStreamEventType,
+  type PlanStreamingOptions,
+} from './kosuke/commands/plan.js';
+export type { TicketsFile, TicketReviewResult } from './kosuke/utils/tickets-manager.js';
+export {
+  BuildEventName,
+  type BuildEventNameType,
+  type BuildStreamEventType,
+  type BuildStreamingOptions,
+  type BuildTokenUsage,
+} from './kosuke/commands/build.js';
 
 // Export version from package.json
 export const version = packageJson.version;

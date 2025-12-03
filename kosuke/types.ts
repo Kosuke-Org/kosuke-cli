@@ -2,6 +2,35 @@
  * Shared types for Kosuke CLI
  */
 
+// ============================================
+// ATTACHMENT TYPES (for web integration)
+// ============================================
+
+/** File type classification */
+export type FileType = 'image' | 'document';
+
+/** Supported image MIME types for Claude API */
+export type SupportedImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+/** Result from file upload - contains all metadata needed for Claude API */
+export interface UploadResult {
+  fileUrl: string;
+  filename: string; // Original filename
+  storedFilename: string; // Sanitized filename used in storage
+  fileType: FileType;
+  mediaType: string; // MIME type
+  fileSize: number;
+}
+
+/** Attachment payload for messages */
+export interface MessageAttachmentPayload {
+  upload: UploadResult;
+}
+
+// ============================================
+// BATCH AND FIX TYPES
+// ============================================
+
 export interface Batch {
   name: string;
   directory: string;

@@ -257,17 +257,17 @@ export async function validateAndFixTickets(
 
   const reviewPrompt = buildReviewPrompt(tickets);
 
-  const reviewResult = await runAgent('Validate and fix ticket structure', {
-    systemPrompt: reviewPrompt,
-    maxTurns: 10,
-    verbosity: 'minimal',
-    cwd: projectPath,
-  });
-
   try {
+    const reviewResult = await runAgent('Validate and fix ticket structure', {
+      systemPrompt: reviewPrompt,
+      maxTurns: 10,
+      verbosity: 'minimal',
+      cwd: projectPath,
+    });
+
     const jsonMatch = reviewResult.response.match(/\{[\s\S]*"fixedTickets"[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error('No valid review result found');
+      throw new Error('No valid review result found in response');
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as TicketReviewResult;
@@ -304,7 +304,7 @@ export async function validateAndFixTickets(
 
     return parsed;
   } catch (error) {
-    // If validation fails, return original tickets with warning
+    // If validation fails (including runAgent failure), return original tickets with warning
     console.warn('⚠️  Ticket validation failed, using original tickets');
     console.warn(`   Error: ${error instanceof Error ? error.message : String(error)}\n`);
     return {
