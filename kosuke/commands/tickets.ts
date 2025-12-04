@@ -94,9 +94,9 @@ Examples of SCAFFOLD tickets:
   const webTestGuidance = noTest
     ? ''
     : `
-**WEB TEST TICKETS - Stagehand Agent E2E Tests:**
+**WEB TEST TICKETS - Playwright MCP E2E Tests:**
 
-Web test tickets are executed by Stagehand agent and must follow these guidelines:
+Web test tickets are executed by Playwright MCP with Claude AI and must follow these guidelines:
 
 **Test User Discovery:**
 1. **ALWAYS read seed files** to find test user credentials:
@@ -126,7 +126,7 @@ Each web test ticket MUST include:
    - Data validation points
    - User feedback confirmation
 
-**Stagehand Best Practices:**
+**Playwright MCP Best Practices:**
 - Use natural language, NOT code
 - Be SPECIFIC about element identification (button text, input labels, exact URLs)
 - Include EXPECTED OUTCOMES after each major action

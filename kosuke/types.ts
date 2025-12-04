@@ -154,6 +154,7 @@ export interface BuildOptions {
   url?: string; // Base URL for testing (default: http://localhost:3000)
   headless?: boolean; // Run browser in headless mode during testing
   verbose?: boolean; // Enable verbose output for tests
+  trace?: boolean; // Enable Playwright trace recording
   noLogs?: boolean;
 }
 
@@ -209,20 +210,16 @@ export interface TestOptions {
   url?: string; // Base URL for web tests (default: http://localhost:3000)
   headless?: boolean; // Run browser in headless mode (invisible)
   verbose?: boolean; // Enable verbose output
-  granular?: boolean; // Generate script with act/extract/observe primitives (default: false)
-  directory?: string; // Directory for context-aware script generation (only for granular mode)
+  trace?: boolean; // Enable Playwright trace recording (saves video/screenshots)
   noLogs?: boolean;
 }
 
-export interface GranularTestStep {
-  type: 'act' | 'extract' | 'observe';
-  description: string;
-  code: string;
-}
-
-export interface GranularTestScript {
-  steps: GranularTestStep[];
-  fullCode: string; // Complete executable TypeScript code
+export interface MCPToolUsage {
+  navigations: number;
+  clicks: number;
+  types: number;
+  extracts: number;
+  other: number;
 }
 
 export interface TestResult {
@@ -241,6 +238,8 @@ export interface TestResult {
   };
   cost: number;
   error?: string;
+  mcpToolUsage?: MCPToolUsage; // Playwright MCP tool call tracking
+  mcpToolCost?: number; // Separate cost for Playwright tool calls
 }
 
 export interface MigrateOptions {
