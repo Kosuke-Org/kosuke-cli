@@ -78,11 +78,7 @@ export { planCommand, planCore, planCoreStreaming } from './kosuke/commands/plan
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCore } from './kosuke/commands/ship.js';
-export {
-  buildCommand,
-  buildCoreStreaming,
-  sortTicketsByProcessingOrder,
-} from './kosuke/commands/build.js';
+export { buildCommand } from './kosuke/commands/build.js';
 export { migrateCommand, migrateCore } from './kosuke/commands/migrate.js';
 export { reviewCommand, reviewCore } from './kosuke/commands/review.js';
 export { testCommand, testCore } from './kosuke/commands/test.js';
@@ -173,13 +169,6 @@ export {
   type PlanStreamingOptions,
 } from './kosuke/commands/plan.js';
 export type { TicketsFile, TicketReviewResult } from './kosuke/utils/tickets-manager.js';
-export {
-  BuildEventName,
-  type BuildEventNameType,
-  type BuildStreamEventType,
-  type BuildStreamingOptions,
-  type BuildTokenUsage,
-} from './kosuke/commands/build.js';
 
 // Export version from package.json
 export const version = packageJson.version;
