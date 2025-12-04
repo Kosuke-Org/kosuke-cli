@@ -21,12 +21,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { glob } from 'glob';
-import type {
-  MessageAttachmentPayload,
-  PlanOptions,
-  SupportedImageMediaType,
-  Ticket,
-} from '../types.js';
+import type { PlanOptions, Ticket } from '../types.js';
 import { calculateCost } from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
@@ -558,7 +553,6 @@ export const PlanEventName = {
   TEXT_DELTA: 'text_delta',
   TOOL_USE: 'tool_use',
   TOOL_RESULT: 'tool_result',
-  CLARIFICATION: 'clarification',
   TICKETS_GENERATED: 'tickets_generated',
   COMPLETE: 'complete',
   ERROR: 'error',
@@ -578,11 +572,6 @@ export type PlanStreamEventType =
       input: Record<string, unknown>;
     }
   | { type: typeof PlanEventName.TOOL_RESULT; toolId: string; result: string; isError: boolean }
-  | {
-      type: typeof PlanEventName.CLARIFICATION;
-      question: string;
-      sendAnswer: (answer: string) => void;
-    }
   | { type: typeof PlanEventName.TICKETS_GENERATED; tickets: Ticket[]; ticketsPath: string }
   | {
       type: typeof PlanEventName.COMPLETE;
@@ -590,6 +579,10 @@ export type PlanStreamEventType =
       ticketsPath: string;
       tokensUsed: PlanResult['tokensUsed'];
       cost: number;
+      /** True if Claude is asking clarification questions and needs user response */
+      needsClarification: boolean;
+      /** Conversation history for resuming - pass as conversationHistory on next call */
+      messages: Anthropic.MessageParam[];
     }
   | { type: typeof PlanEventName.ERROR; message: string };
 
@@ -605,82 +598,8 @@ export interface PlanStreamingOptions {
   noTest?: boolean;
   /** Custom tickets output path (optional, defaults to tickets/{timestamp}.ticket.json) */
   ticketsPath?: string;
-  /** Optional attachments (images, PDFs) for context - web integration only */
-  attachments?: MessageAttachmentPayload[];
   /** Optional conversation history for resuming after clarification */
   conversationHistory?: Anthropic.MessageParam[];
-}
-
-/**
- * Check if a media type is a supported image type for Claude API
- */
-function isSupportedImageMediaType(mediaType: string): mediaType is SupportedImageMediaType {
-  return (
-    mediaType === 'image/jpeg' ||
-    mediaType === 'image/png' ||
-    mediaType === 'image/gif' ||
-    mediaType === 'image/webp'
-  );
-}
-
-/**
- * Build the initial user message with optional attachments
- * Creates properly typed content blocks for images, documents, and text
- * Uses public URLs for file attachments (Claude fetches from URL)
- */
-function buildInitialMessage(
-  prompt: string,
-  attachments?: MessageAttachmentPayload[]
-): Anthropic.MessageParam {
-  // If no attachments, return simple string content
-  if (!attachments || attachments.length === 0) {
-    return { role: 'user', content: prompt };
-  }
-
-  // Build content blocks array for user message with attachments
-  type UserContentBlock = Exclude<Anthropic.MessageParam['content'], string>[number];
-  const contentBlocks: UserContentBlock[] = [];
-
-  // Add text block first
-  if (prompt.trim()) {
-    contentBlocks.push({
-      type: 'text',
-      text: prompt.trim(),
-    });
-  }
-
-  // Add image or document blocks for all attachments using public URLs
-  for (const attachment of attachments) {
-    const { upload } = attachment;
-
-    if (upload.fileType === 'image') {
-      if (isSupportedImageMediaType(upload.mediaType)) {
-        contentBlocks.push({
-          type: 'image',
-          source: {
-            type: 'url',
-            url: upload.fileUrl,
-          },
-        });
-      } else {
-        // Fallback for unsupported image types - add as text reference
-        contentBlocks.push({
-          type: 'text',
-          text: `Attached image available at ${upload.fileUrl}`,
-        });
-      }
-    } else if (upload.fileType === 'document') {
-      contentBlocks.push({
-        type: 'document',
-        source: {
-          type: 'url',
-          url: upload.fileUrl,
-        },
-      });
-    }
-  }
-
-  return { role: 'user', content: contentBlocks };
 }
 
 /**
@@ -713,7 +632,6 @@ export async function* planCoreStreaming(
     directory,
     noTest = false,
     ticketsPath: customTicketsPath,
-    attachments,
     conversationHistory,
   } = options;
 
@@ -741,15 +659,14 @@ export async function* planCoreStreaming(
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
-  // Use conversation history if resuming, otherwise build initial message
+  // Use conversation history if resuming, otherwise start fresh
   let messages: Anthropic.MessageParam[];
   if (conversationHistory && conversationHistory.length > 0) {
     // Resuming conversation - append the new user message to history
     messages = [...conversationHistory, { role: 'user', content: prompt }];
   } else {
-    // New conversation - build initial message with optional attachments
-    const initialMessage = buildInitialMessage(prompt, attachments);
-    messages = [initialMessage];
+    // New conversation
+    messages = [{ role: 'user', content: prompt }];
   }
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -827,25 +744,31 @@ export async function* planCoreStreaming(
             currentText.includes('Clarification Questions') ||
             currentText.includes('Quick Option')
           ) {
-            // Create a promise that will be resolved when answer is provided
-            let resolveAnswer: ((answer: string) => void) | null = null;
-            const answerPromise = new Promise<string>((resolve) => {
-              resolveAnswer = resolve;
-            });
+            // Yield COMPLETE with needsClarification flag - consumer will prompt for input
+            // and call again with conversationHistory
+            const cost = calculateCost(
+              totalInputTokens,
+              totalOutputTokens,
+              totalCacheCreationTokens,
+              totalCacheReadTokens
+            );
 
             yield {
-              type: 'clarification',
-              question: currentText,
-              sendAnswer: (answer: string) => {
-                if (resolveAnswer) resolveAnswer(answer);
+              type: 'complete',
+              tickets: [],
+              ticketsPath,
+              tokensUsed: {
+                input: totalInputTokens,
+                output: totalOutputTokens,
+                cacheCreation: totalCacheCreationTokens,
+                cacheRead: totalCacheReadTokens,
               },
+              cost,
+              needsClarification: true,
+              messages,
             };
 
-            // Wait for answer
-            const answer = await answerPromise;
-            messages = [...messages, { role: 'user', content: answer }];
-            needsUserInput = false; // Continue processing with the answer
-            continue;
+            return;
           }
 
           // No clarification needed and no tools - we're done with this iteration
@@ -982,6 +905,8 @@ export async function* planCoreStreaming(
               cacheRead: totalCacheReadTokens,
             },
             cost,
+            needsClarification: false,
+            messages,
           };
 
           return;
@@ -1011,6 +936,8 @@ export async function* planCoreStreaming(
         cacheRead: totalCacheReadTokens,
       },
       cost,
+      needsClarification: false,
+      messages,
     };
   } catch (error) {
     yield {
@@ -1077,101 +1004,116 @@ async function interactivePlanSession(
   let finalTokensUsed = { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
   let finalCost = 0;
   let isFirstTextOutput = true;
+  let conversationHistory: Anthropic.MessageParam[] | undefined;
+  let currentPrompt = initialPrompt;
 
   try {
-    console.log('\n🤔 Claude is analyzing...\n');
+    // Conversation loop - continues until no clarification needed
+    conversationLoop: while (true) {
+      console.log('\n🤔 Claude is analyzing...\n');
+      isFirstTextOutput = true;
 
-    // Consume the streaming generator
-    for await (const event of planCoreStreaming({
-      prompt: initialPrompt,
-      directory: cwd,
-      noTest,
-      ticketsPath,
-    })) {
-      switch (event.type) {
-        case 'text_delta':
-          // First text output - print header
-          if (isFirstTextOutput) {
-            process.stdout.write('\n> Claude:\n');
-            isFirstTextOutput = false;
-          }
-          process.stdout.write(event.content);
-          break;
+      // Consume the streaming generator
+      for await (const event of planCoreStreaming({
+        prompt: currentPrompt,
+        directory: cwd,
+        noTest,
+        ticketsPath,
+        conversationHistory,
+      })) {
+        switch (event.type) {
+          case 'text_delta':
+            // First text output - print header
+            if (isFirstTextOutput) {
+              process.stdout.write('\n> Claude:\n');
+              isFirstTextOutput = false;
+            }
+            process.stdout.write(event.content);
+            break;
 
-        case 'clarification':
-          // Reset for next Claude response
-          isFirstTextOutput = true;
+          case 'tickets_generated':
+            console.log(`\n\n📋 Generated ${event.tickets.length} ticket(s)`);
+            console.log(`📁 Saved to: ${event.ticketsPath}\n`);
 
-          // Show cost so far (we don't have intermediate costs in streaming, skip for now)
-          console.log('\n');
+            // Display ticket summary
+            for (const ticket of event.tickets) {
+              console.log(`   • ${ticket.id}: ${ticket.title}`);
+            }
+            break;
 
-          // Ask for user response
-          console.log('💬 Your response (type "exit" to quit):\n');
-          const userResponse = await askQuestion('You: ');
+          case 'complete':
+            // Accumulate tokens and cost across clarification rounds
+            finalTokensUsed = {
+              input: finalTokensUsed.input + event.tokensUsed.input,
+              output: finalTokensUsed.output + event.tokensUsed.output,
+              cacheCreation: finalTokensUsed.cacheCreation + event.tokensUsed.cacheCreation,
+              cacheRead: finalTokensUsed.cacheRead + event.tokensUsed.cacheRead,
+            };
+            finalCost += event.cost;
 
-          if (!userResponse) {
-            console.log('\n⚠️  Empty response. Please provide an answer or type "exit".');
-            event.sendAnswer('go with recommendations');
-          } else if (userResponse.toLowerCase() === 'exit') {
-            console.log('\n👋 Exiting planning session.\n');
-            // Send empty to trigger completion
-            event.sendAnswer('exit');
-          } else {
-            console.log('\n🤔 Claude is analyzing...\n');
-            event.sendAnswer(userResponse);
-          }
-          break;
+            // Handle clarification - prompt user and continue conversation
+            if (event.needsClarification) {
+              console.log('\n');
+              console.log('💬 Your response (type "exit" to quit):\n');
+              const userResponse = await askQuestion('You: ');
 
-        case 'tickets_generated':
-          console.log(`\n\n📋 Generated ${event.tickets.length} ticket(s)`);
-          console.log(`📁 Saved to: ${event.ticketsPath}\n`);
+              if (!userResponse) {
+                console.log('\n⚠️  Empty response. Using default: "go with recommendations"');
+                currentPrompt = 'go with recommendations';
+              } else if (userResponse.toLowerCase() === 'exit') {
+                console.log('\n👋 Exiting planning session.\n');
+                break conversationLoop;
+              } else {
+                currentPrompt = userResponse;
+              }
 
-          // Display ticket summary
-          for (const ticket of event.tickets) {
-            console.log(`   • ${ticket.id}: ${ticket.title}`);
-          }
-          break;
+              // Save conversation history for next round
+              conversationHistory = event.messages;
+              continue conversationLoop;
+            }
 
-        case 'complete':
-          finalTickets = event.tickets;
-          finalTokensUsed = event.tokensUsed;
-          finalCost = event.cost;
+            // Final completion - show summary
+            finalTickets = event.tickets;
 
-          console.log('\n' + '═'.repeat(90));
-          console.log('📊 Total Session Cost:');
-          console.log(
-            formatTokenUsage(
-              event.tokensUsed.input,
-              event.tokensUsed.output,
-              event.tokensUsed.cacheCreation,
-              event.tokensUsed.cacheRead,
-              event.cost
-            )
-          );
-          console.log('═'.repeat(90));
-
-          if (event.tickets.length > 0) {
-            const relativeTicketsPath = event.ticketsPath.replace(cwd + '/', '');
-            console.log('\n🎉 Planning complete!\n');
-            console.log('💡 Next steps:');
-            console.log('   - Review tickets: cat "' + event.ticketsPath + '"');
+            console.log('\n' + '═'.repeat(90));
+            console.log('📊 Total Session Cost:');
             console.log(
-              '   - Build tickets: kosuke build --directory="' +
-                cwd +
-                '" --tickets="' +
-                relativeTicketsPath +
-                '"'
+              formatTokenUsage(
+                finalTokensUsed.input,
+                finalTokensUsed.output,
+                finalTokensUsed.cacheCreation,
+                finalTokensUsed.cacheRead,
+                finalCost
+              )
             );
-            console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
-          } else {
-            console.log('\n👋 Session ended without generating tickets.\n');
-          }
-          break;
+            console.log('═'.repeat(90));
 
-        case 'error':
-          console.error(`\n❌ Error: ${event.message}`);
-          throw new Error(event.message);
+            if (event.tickets.length > 0) {
+              const relativeTicketsPath = event.ticketsPath.replace(cwd + '/', '');
+              console.log('\n🎉 Planning complete!\n');
+              console.log('💡 Next steps:');
+              console.log('   - Review tickets: cat "' + event.ticketsPath + '"');
+              console.log(
+                '   - Build tickets: kosuke build --directory="' +
+                  cwd +
+                  '" --tickets="' +
+                  relativeTicketsPath +
+                  '"'
+              );
+              console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
+            } else {
+              console.log('\n👋 Session ended without generating tickets.\n');
+            }
+            break conversationLoop;
+
+          case 'error':
+            console.error(`\n❌ Error: ${event.message}`);
+            throw new Error(event.message);
+        }
       }
+
+      // If we reach here without hitting continue or break, exit loop
+      break;
     }
   } catch (error) {
     console.error('\n❌ Error during planning:', error);

@@ -80,32 +80,12 @@ export async function runFormat(cwd: string = process.cwd()): Promise<Validation
     });
     return { success: true, output };
   } catch (error: unknown) {
-    const err = error as { status?: number; stdout?: string; stderr?: string; message?: string };
-    const stdout = err.stdout || '';
-    const stderr = err.stderr || '';
-
-    // If exit code is 0, treat as success (some npm versions write to stderr for info)
-    if (err.status === 0) {
-      return { success: true, output: stdout || stderr };
-    }
-
-    // Check if there are actual error messages (not just npm script headers)
-    const combinedOutput = `${stdout}\n${stderr}`.trim();
-    const lines = combinedOutput.split('\n').filter((line) => line.trim());
-
-    // Filter out npm script header lines ("> script-name", "> command")
-    const meaningfulLines = lines.filter(
-      (line) => !line.startsWith('>') && !line.startsWith('$') && line.trim().length > 0
-    );
-
-    // If no meaningful error lines, the format likely succeeded
-    if (meaningfulLines.length === 0) {
-      return { success: true, output: combinedOutput };
-    }
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    const errorMessage = err.stdout || err.stderr || err.message || '';
 
     return {
       success: false,
-      error: `$ ${command}\n\n${combinedOutput}`,
+      error: `$ ${command}\n\n${errorMessage}`,
     };
   }
 }
@@ -290,12 +270,6 @@ export async function runComprehensiveLinting(
 
       if (!fixApplied) {
         console.log(`\n⚠️  No fixes were applied by Claude for ${step.name}`);
-        // Re-run validation - Claude might have correctly identified no real errors
-        console.log(`\n🔍 Re-verifying ${step.name}...\n`);
-        result = await step.run();
-        if (result.success) {
-          console.log(`✅ ${step.name} - Passed on re-check (was a false positive)\n`);
-        }
         break;
       }
 

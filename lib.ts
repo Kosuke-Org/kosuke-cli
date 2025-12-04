@@ -140,10 +140,6 @@ export type {
   TestResult,
   TestRunnerOptions,
   TestRunnerResult,
-  FileType,
-  SupportedImageMediaType,
-  UploadResult,
-  MessageAttachmentPayload,
   // Testing utility types
   AnalysisResult,
   TestFailure,
