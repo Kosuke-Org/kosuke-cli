@@ -132,6 +132,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
       url,
       headless,
       verbose,
+      trace,
       noLogs = false,
     } = options;
 
@@ -229,6 +230,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
             url,
             headless,
             verbose,
+            trace,
             noLogs,
           });
 
@@ -282,6 +284,7 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
               url,
               headless,
               verbose,
+              trace,
               noLogs,
             });
           }

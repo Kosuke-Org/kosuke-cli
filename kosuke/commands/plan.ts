@@ -273,9 +273,9 @@ For each question, provide BOTH the question AND a recommended approach:
       : `
 5. PLAN-WEB-TEST tickets last (validate everything works)
 
-**WEB TEST TICKETS - Stagehand Agent E2E Tests:**
+**WEB TEST TICKETS - Playwright MCP E2E Tests:**
 
-Web test tickets are executed by Stagehand agent. Follow these guidelines:
+Web test tickets are executed by Playwright MCP with Claude AI. Follow these guidelines:
 
 **Test User Discovery:**
 - Read seed files (lib/db/seed.ts or src/lib/db/seed.ts) to find test users

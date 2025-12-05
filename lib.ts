@@ -135,6 +135,7 @@ export type {
   TestContext,
   TestOptions,
   TestResult,
+  MCPToolUsage,
   TestRunnerOptions,
   TestRunnerResult,
   // Testing utility types
