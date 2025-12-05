@@ -7,10 +7,10 @@
 
 import {
   query,
+  type Query,
   type Options,
   type PermissionMode,
   type SettingSource,
-  type McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -22,6 +22,23 @@ import { join } from 'path';
  * - verbose: Show all text output + tool usage
  */
 export type AgentVerbosity = 'minimal' | 'normal' | 'verbose';
+
+/**
+ * Claude SDK message structure (subset of properties we use)
+ */
+export interface ClaudeMessage {
+  session_id?: string;
+  type?: string;
+  subtype?: string;
+  text?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  [key: string]: unknown; // Allow other properties
+}
 
 /**
  * Configuration for agent execution
@@ -36,7 +53,8 @@ export interface AgentConfig {
   captureConversation?: boolean; // Enable full conversation capture (for tickets/requirements)
   settingSources?: SettingSource[]; // Where to load settings from (e.g., 'project' loads CLAUDE.md)
   resume?: string; // Session ID to resume multi-turn conversation
-  mcpServers?: Record<string, McpServerConfig>; // Custom MCP servers with tools
+  allowedTools?: string[]; // Whitelist of allowed tool names (if set, all other tools blocked)
+  disallowedTools?: string[]; // Blacklist of disallowed tool names
 }
 
 /**
@@ -64,6 +82,200 @@ export interface AgentResult {
       output?: unknown;
     }>;
   }>; // Full conversation capture (if enabled)
+}
+
+/**
+ * Parsed tool action with structured parameters
+ */
+export interface ParsedToolAction {
+  action: string;
+  params: Record<string, unknown>;
+}
+
+/**
+ * Parse tool usage into structured action and params for streaming/display
+ *
+ * @param toolName - Name of the tool being used
+ * @param toolInput - Input parameters for the tool
+ * @returns Structured action and params object
+ *
+ * @example
+ * parseToolAction('Read', { file_path: '/path/to/file.ts' })
+ * // Returns: { action: 'Read', params: { path: '/path/to/file.ts' } }
+ */
+export function parseToolAction(
+  toolName: string,
+  toolInput: Record<string, unknown>
+): ParsedToolAction {
+  const params: Record<string, unknown> = {};
+
+  switch (toolName) {
+    case 'Read':
+      params.path = toolInput.file_path || toolInput.target_file;
+      break;
+
+    case 'Grep':
+      params.pattern = toolInput.pattern as string;
+      if (toolInput.type) params.type = toolInput.type;
+      if (toolInput.glob) params.glob = toolInput.glob;
+      if (toolInput.path) params.path = toolInput.path;
+      break;
+
+    case 'Glob':
+      params.pattern = toolInput.glob_pattern || toolInput.pattern;
+      if (toolInput.target_directory) params.directory = toolInput.target_directory;
+      break;
+
+    case 'LS':
+      params.path = toolInput.target_directory;
+      break;
+
+    case 'Task':
+      {
+        const description = toolInput.description as string;
+        params.description = description?.substring(0, 100);
+        if (toolInput.subagent_type) params.type = toolInput.subagent_type;
+      }
+      break;
+
+    case 'WebSearch':
+      params.query = toolInput.search_term as string;
+      break;
+
+    case 'WebFetch':
+      {
+        const url = toolInput.url as string;
+        params.url = url;
+        if (url) {
+          try {
+            params.domain = new URL(url).hostname;
+          } catch {
+            params.domain = undefined;
+          }
+        }
+      }
+      break;
+
+    case 'Edit':
+    case 'StrReplace':
+    case 'Write':
+    case 'Delete':
+      params.path = toolInput.file_path || toolInput.path;
+      break;
+
+    case 'Bash':
+    case 'Shell':
+      {
+        const command = toolInput.command as string;
+        params.command = command?.substring(0, 100);
+      }
+      break;
+
+    case 'CodebaseSearch':
+      params.query = toolInput.query;
+      if (toolInput.target_directories) {
+        params.directories = toolInput.target_directories;
+      }
+      break;
+
+    default:
+      // For unknown tools, include all input params as fallback
+      Object.assign(params, toolInput);
+      break;
+  }
+
+  return { action: toolName, params };
+}
+
+/**
+ * Log tool usage
+ */
+function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set<string>): void {
+  // Parse tool action using shared utility (handles normalization and params)
+  const input =
+    toolInput && typeof toolInput === 'object' ? (toolInput as Record<string, unknown>) : {};
+
+  const parsed = parseToolAction(toolName, input);
+
+  // Skip logging for edit tools - fixCount will handle them
+  const editTools = ['Edit', 'StrReplace', 'Write', 'Delete'];
+  if (editTools.includes(parsed.action)) {
+    return;
+  }
+
+  // Track file references for Read operations
+  if (parsed.action === 'Read' && parsed.params.path) {
+    filesReferenced.add(parsed.params.path as string);
+  }
+
+  // Format log output based on tool type
+  let logMsg = '';
+
+  switch (parsed.action) {
+    case 'Read':
+      logMsg = `   📄 Reading ${parsed.params.path || 'file'}`;
+      break;
+
+    case 'Grep':
+      {
+        const pathInfo = parsed.params.path ? ` in ${parsed.params.path}` : '';
+        logMsg = `   🔍 Searching: ${parsed.params.pattern}${pathInfo}`;
+      }
+      break;
+
+    case 'Glob':
+      {
+        const dirInfo = parsed.params.directory ? ` in ${parsed.params.directory}` : '';
+        logMsg = `   📁 Finding: ${parsed.params.pattern}${dirInfo}`;
+      }
+      break;
+
+    case 'LS':
+      logMsg = `   📂 Listing: ${parsed.params.path || 'directory'}`;
+      break;
+
+    case 'Task':
+      {
+        const taskType = parsed.params.type || 'Task';
+        logMsg = `   🤖 ${taskType}: ${parsed.params.description || ''}`;
+      }
+      break;
+
+    case 'WebSearch':
+      logMsg = `   🌐 Search: ${parsed.params.query}`;
+      break;
+
+    case 'WebFetch':
+      logMsg = `   🌐 Fetching: ${parsed.params.domain || parsed.params.url}`;
+      break;
+
+    case 'Bash':
+    case 'Shell':
+      {
+        const cmd = parsed.params.command as string;
+        const displayCmd = cmd?.length > 60 ? cmd.substring(0, 57) + '...' : cmd;
+        logMsg = `   💻 Running: ${displayCmd}`;
+      }
+      break;
+
+    case 'CodebaseSearch':
+      {
+        const dirInfo =
+          parsed.params.directories && Array.isArray(parsed.params.directories)
+            ? ` in ${(parsed.params.directories as string[]).join(', ')}`
+            : '';
+        logMsg = `   🔎 Codebase search: ${parsed.params.query || 'query'}${dirInfo}`;
+      }
+      break;
+
+    default:
+      // Fallback: show full tool info for unknown tools
+      const args = formatToolArgs(toolInput);
+      logMsg = `   🔧 ${parsed.action}(${args})`;
+      break;
+  }
+
+  console.log(logMsg);
 }
 
 /**
@@ -166,105 +378,53 @@ function formatToolArgs(input: unknown): string {
 }
 
 /**
- * Log tool usage
+ * Create Claude agent stream (thin wrapper around SDK query)
+ * Returns raw Query (AsyncIterable) for direct stream consumption
+ * Creates AbortController internally - stream lifecycle manages cleanup
  */
-function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set<string>): void {
-  // Handle both SDK tool names (Read, Glob, Bash) and legacy names (read_file, glob_file_search, run_terminal_cmd)
-  if (
-    (toolName === 'Read' || toolName === 'read_file') &&
-    toolInput &&
-    typeof toolInput === 'object'
-  ) {
-    const input = toolInput as { file_path?: string; target_file?: string };
-    const filePath = input.file_path || input.target_file;
-    if (filePath) {
-      console.log(`   📄 Reading ${filePath}`);
-      filesReferenced.add(filePath);
-    }
-  } else if (
-    (toolName === 'Grep' || toolName === 'grep') &&
-    toolInput &&
-    typeof toolInput === 'object'
-  ) {
-    const input = toolInput as { pattern?: string; path?: string };
-    const pathInfo = input.path ? ` in ${input.path}` : '';
-    console.log(`   🔍 Searching: ${input.pattern || 'pattern'}${pathInfo}`);
-  } else if (
-    (toolName === 'Glob' || toolName === 'glob_file_search') &&
-    toolInput &&
-    typeof toolInput === 'object'
-  ) {
-    const input = toolInput as {
-      pattern?: string;
-      glob_pattern?: string;
-      target_directory?: string;
-    };
-    const pattern = input.pattern || input.glob_pattern || '*';
-    const dirInfo = input.target_directory ? ` in ${input.target_directory}` : '';
-    console.log(`   📁 Finding: ${pattern}${dirInfo}`);
-  } else if (toolName === 'CodebaseSearch' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { query?: string; target_directories?: string[] };
-    const dirInfo =
-      input.target_directories && input.target_directories.length > 0
-        ? ` in ${input.target_directories.join(', ')}`
-        : '';
-    console.log(`   🔎 Codebase search: ${input.query || 'query'}${dirInfo}`);
-  } else if (
-    toolName === 'Edit' ||
-    toolName === 'write' ||
-    toolName === 'search_replace' ||
-    toolName === 'edit_notebook' ||
-    toolName === 'delete_file'
-  ) {
-    // Don't log here - fixCount will handle it
-  } else if (
-    (toolName === 'Bash' || toolName === 'run_terminal_cmd') &&
-    toolInput &&
-    typeof toolInput === 'object'
-  ) {
-    const input = toolInput as { command?: string };
-    const cmd = input.command || 'command';
-    // Truncate long commands
-    const displayCmd = cmd.length > 60 ? cmd.substring(0, 57) + '...' : cmd;
-    console.log(`   💻 Running: ${displayCmd}`);
-  } else if (
-    (toolName === 'ListDir' || toolName === 'list_dir') &&
-    toolInput &&
-    typeof toolInput === 'object'
-  ) {
-    const input = toolInput as { target_directory?: string };
-    console.log(`   📂 Listing: ${input.target_directory || '.'}`);
-  } else if (toolName.includes('write_tickets') && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { tickets?: Array<{ id: string; title: string }> };
-    const ticketCount = input.tickets?.length || 0;
-    console.log(`   📋 Creating ${ticketCount} ticket${ticketCount !== 1 ? 's' : ''}...`);
-  } else if (toolName === 'Task' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { subagent_type?: string; description?: string };
-    const taskType = input.subagent_type || 'Task';
-    const description = input.description || '';
-    console.log(`   🤖 ${taskType}: ${description}`);
-  } else {
-    // Generic tool logging with arguments
-    const args = formatToolArgs(toolInput);
-    console.log(`   🔧 ${toolName}(${args})`);
-  }
-}
-
-/**
- * Run Claude agent with unified configuration and logging
- */
-export async function runAgent(prompt: string, config: AgentConfig): Promise<AgentResult> {
+export function runAgentStream(prompt: string, config: AgentConfig): Query {
   const {
     systemPrompt,
     maxTurns = 20,
     model = 'claude-sonnet-4-5',
     cwd = process.cwd(),
-    verbosity = 'normal',
     permissionMode = 'bypassPermissions',
-    captureConversation = false,
-    settingSources = ['project'], // Default: Load CLAUDE.md from project
+    settingSources = ['project'],
     resume,
-    mcpServers,
+    allowedTools,
+    disallowedTools,
+  } = config;
+
+  // Create AbortController for SDK cleanup
+  const abortController = new AbortController();
+
+  const options: Options = {
+    model,
+    systemPrompt,
+    maxTurns,
+    cwd,
+    permissionMode,
+    settingSources,
+    abortController,
+    ...(resume && { resume }),
+    ...(allowedTools && { allowedTools }),
+    ...(disallowedTools && { disallowedTools }),
+  };
+
+  return query({ prompt, options });
+}
+
+/**
+ * Run Claude agent with unified configuration and logging
+ * Processes stream and returns final result
+ */
+export async function runAgent(prompt: string, config: AgentConfig): Promise<AgentResult> {
+  const {
+    verbosity = 'normal',
+    captureConversation = false,
+    settingSources = ['project'],
+    cwd = process.cwd(),
+    model = 'claude-sonnet-4-5',
   } = config;
 
   // Log the model being used
@@ -280,23 +440,8 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     }
   }
 
-  // Create AbortController for cleanup - the SDK spawns child processes
-  // that need to be terminated after each query to prevent memory accumulation
-  const abortController = new AbortController();
-
-  const options: Options = {
-    model,
-    systemPrompt,
-    maxTurns,
-    cwd,
-    permissionMode,
-    settingSources,
-    abortController, // Pass to SDK for process cleanup
-    ...(resume && { resume }),
-    ...(mcpServers && { mcpServers }),
-  };
-
-  const responseStream = query({ prompt, options });
+  // Get the stream (creates AbortController internally)
+  const responseStream = runAgentStream(prompt, config);
 
   let response = '';
   let inputTokens = 0;
@@ -461,13 +606,8 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     result.conversationMessages = conversationMessages;
   }
 
-  // Cleanup: Abort the controller to terminate any child processes spawned by the SDK
-  // This prevents memory accumulation when running multiple agents sequentially (e.g., kosuke build)
-  try {
-    abortController.abort();
-  } catch {
-    // Ignore abort errors - cleanup is best-effort
-  }
+  // Note: AbortController cleanup is handled by the SDK's stream lifecycle
+  // When the stream ends, child processes are automatically terminated
 
   return result;
 }

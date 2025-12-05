@@ -42,6 +42,7 @@ import { migrateCommand } from './kosuke/commands/migrate.js';
 import { planCommand } from './kosuke/commands/plan.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
 import { reviewCommand } from './kosuke/commands/review.js';
+import { serveCommand } from './kosuke/commands/serve.js';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { testCommand } from './kosuke/commands/test.js';
 import { ticketsCommand } from './kosuke/commands/tickets.js';
@@ -238,6 +239,14 @@ async function main() {
         break;
       }
 
+      case 'serve': {
+        const options = {
+          port: parseInt(args.find((arg) => arg.startsWith('--port='))?.split('=')[1] || '3000'),
+        };
+        await serveCommand(options);
+        break;
+      }
+
       default:
         console.error(`❌ Unknown command: ${command}\n`);
         showHelp();
@@ -256,6 +265,21 @@ function showHelp() {
 ╚═══════════════════════════════════════════════════════════╝
 
 COMMANDS:
+
+  serve [options]
+    Start HTTP server for Kosuke CLI commands
+    Provides SSE endpoints for real-time command execution
+
+    Options:
+      --port=<number>       Port to listen on (default: 3000)
+
+    Examples:
+      kosuke serve                         # Start on port 3000
+      kosuke serve --port=8080             # Start on custom port
+
+    Endpoints:
+      GET  /health                         # Health check
+      POST /api/plan                       # Plan command with SSE
 
   sync-rules [options]
     Sync rules and documentation from kosuke-template

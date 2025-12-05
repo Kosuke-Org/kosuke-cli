@@ -17,15 +17,19 @@
  *   kosuke plan --prompt="Add notes feature" --no-test  # Skip WEB-TEST tickets
  */
 
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync, mkdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
-import { z } from 'zod';
-import type { PlanOptions, Ticket } from '../types.js';
-import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
+import type { PlanOptions } from '../types.js';
+import type { AgentConfig, ClaudeMessage } from '../utils/claude-agent.js';
+import {
+  calculateCost,
+  formatCostBreakdown,
+  runAgent,
+  runAgentStream,
+} from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { processAndWriteTickets } from '../utils/tickets-manager.js';
+import { parseTickets, sortTicketsByOrder, writeTicketsFile } from '../utils/tickets-manager.js';
 
 /**
  * Generate timestamp-based tickets path in tickets/ folder
@@ -53,7 +57,7 @@ function generateTicketsPath(cwd: string): string {
  * Result from programmatic plan execution
  */
 export interface PlanResult {
-  success: boolean;
+  status: 'input_required' | 'success' | 'error';
   ticketsFile: string | null;
   tokensUsed: {
     input: number;
@@ -62,532 +66,541 @@ export interface PlanResult {
     cacheRead: number;
   };
   cost: number;
-  sessionId?: string; // Session ID for resuming later
+  sessionId?: string;
+  message?: string; // Claude's response (clarification questions or final message)
   error?: string;
 }
 
-function createPlanMcpServer(ticketsPath: string, cwd: string) {
-  return createSdkMcpServer({
-    name: 'kosuke-plan',
-    version: '1.0.0',
-    tools: [
-      tool(
-        'write_tickets',
-        'Create tickets.json file with implementation tickets. Use this when all clarification questions have been answered and you have enough information to create actionable tickets.',
-        {
-          tickets: z
-            .array(
-              z.object({
-                id: z
-                  .string()
-                  .describe(
-                    'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-ENGINE- for Python microservice, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests'
-                  ),
-                title: z.string().describe('Short descriptive title'),
-                description: z
-                  .string()
-                  .describe(
-                    'Detailed description with acceptance criteria, implementation notes, and technical requirements based on codebase analysis'
-                  ),
-                type: z
-                  .enum(['schema', 'engine', 'backend', 'frontend', 'test'])
-                  .describe(
-                    'Ticket type: schema (database), engine (Python microservice), backend (API), frontend (UI), test (E2E)'
-                  ),
-                estimatedEffort: z.number().describe('Effort estimate 1-10'),
-                category: z
-                  .string()
-                  .optional()
-                  .describe('Feature category (e.g., auth, billing, tasks, ui)'),
-              })
-            )
-            .describe('Array of tickets to create'),
-        },
-        async (args) => {
-          try {
-            // Transform to full Ticket objects
-            const tickets: Ticket[] = args.tickets.map((t) => ({
-              id: t.id,
-              title: t.title,
-              description: t.description,
-              type: t.type,
-              estimatedEffort: t.estimatedEffort,
-              status: 'Todo' as const,
-              category: t.category,
-            }));
-
-            // Validate and write tickets IMMEDIATELY
-            console.log(`\n✅ Generated ${tickets.length} ticket(s)`);
-            const { tickets: validatedTickets } = await processAndWriteTickets(
-              tickets,
-              ticketsPath,
-              cwd,
-              { displaySummary: true }
-            );
-
-            // Get relative path for cleaner output
-            const relativeTicketsPath = ticketsPath.replace(cwd + '/', '');
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `✅ Successfully saved ${validatedTickets.length} tickets to ${relativeTicketsPath}. Your job is complete.`,
-                },
-              ],
-            };
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            console.error(`\n❌ Failed to create tickets: ${errorMessage}`);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Error: ${errorMessage}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-        }
-      ),
-    ],
-  });
-}
-
 /**
- * Session state for interactive mode
+ * Stream event from plan core stream
  */
-interface PlanSession {
-  prompt: string;
-  sessionId?: string; // Track session ID for multi-turn conversation
-}
+export type PlanStreamEvent =
+  | { type: 'message'; data: ClaudeMessage } // Claude SDK message
+  | { type: 'done'; data: PlanResult }; // Final result
 
 /**
  * Build system prompt for plan command
+ *
+ * Two-phase workflow:
+ * - Phase 1: Ask clarification questions (non-technical, user-focused)
+ * - Phase 2: Generate tickets via write_tickets tool
+ *
  * @param noTest - If true, exclude WEB-TEST tickets from generation
  */
 function buildPlanSystemPrompt(noTest: boolean = false): string {
-  return `You are Kosuke Planning Assistant - Your job is to create implementation tickets, NOT to implement features.
+  const testGuidelines = noTest
+    ? ''
+    : `
 
-**YOUR WORKFLOW (3 STEPS):**
+**E2E Test Tickets:**
+- Find test users in seed files (\`lib/db/seed.ts\`)
+- Pattern: \`*+kosuke_test@example.com\` → OTP: \`424242\`
+- Required: Test credentials, numbered steps, clear element descriptions, acceptance criteria`;
 
-**STEP 1: Explore Codebase (MANDATORY - ALWAYS DO THIS FIRST)**
-⚠️ You MUST explore the codebase BEFORE asking clarification questions
-- Use glob_file_search to find relevant files (pages, components, APIs)
-- Use read_file to understand existing patterns and conventions
-- Use grep/codebase_search to find related implementations
-- This helps you ask INFORMED questions and generate ACCURATE tickets
+  return `# ROLE: TICKET PLANNER (NOT IMPLEMENTER)
 
-**STEP 2: Ask Clarification Questions (MANDATORY)**
-⚠️  You MUST ask clarification questions BEFORE creating tickets - DO NOT SKIP THIS STEP
+YOU ARE A PLANNER, NOT AN IMPLEMENTER.
+YOU CREATE TICKETS. YOU DO NOT WRITE CODE. YOU DO NOT IMPLEMENT FEATURES.
 
-**Question Rules:**
-- Ask ONLY about: user experience, business logic, data display, behavior, scope
-- NEVER ask about: technical implementation, libraries, architecture, database, APIs, UI placement, styling
-- YOU decide all technical details - users decide business requirements
+## YOUR ONLY JOB
 
-**Good Questions (User Experience & Business Logic):**
-✅ "Should the report show all data or only filtered data?"
-✅ "What happens if there are no results?"
-✅ "Should this be per-user or per-organization?"
-✅ "What information should be included?"
+**Phase 1:** Ask clarification questions (non-technical, user-focused)
+**Phase 2:** Output raw JSON tickets array (NO CODE, NO IMPLEMENTATION)
 
-**Bad Questions (Technical - Never Ask These):**
-❌ "Should we use library X or Y?"
-❌ "Should this be client-side or server-side?"
-❌ "Where should the button be placed?"
-❌ "Should we cache this?"
-❌ "What file format (landscape/portrait)?"
+## ABSOLUTELY FORBIDDEN
 
-**Output Format (use exactly):**
+❌ NEVER SAY:
+- "Now I'll implement"
+- "Let me create"
+- "Let me build"
+- "I'll update the files"
+- "Let's start implementing"
+- "Implementation Plan:"
+- Any language that suggests you will write code
 
----
+❌ NEVER DO:
+- Write, edit, or create files
+- Install packages
+- Run commands
+- Use Task tool for implementation
+- Output implementation plans
+
+✅ YOUR ONLY ACTIONS:
+- Read files to understand codebase (Phase 1 ONLY)
+- Ask business/UX questions (Phase 1)
+- Output raw JSON tickets array (Phase 2 ONLY)
+
+## Phase 1: Ask Clarification Questions
+
+Explore codebase (Read/Grep/Glob), then ask **ONLY business/UX questions**.
+
+**Example of GOOD questions:**
+- "Should the report include all orders or only completed ones?"
+- "What happens if there are no orders matching the filters?"
+- "Should users with 'viewer' role be able to generate reports?"
+
+**Example of BAD questions (FORBIDDEN):**
+- "Should we use jsPDF or PDFKit for PDF generation?" ❌ (You decide based on codebase)
+- "Should this be a tRPC endpoint or REST API?" ❌ (You decide based on existing patterns)
+- "Should we generate PDFs client-side or server-side?" ❌ (You decide based on architecture)
+
+**Your first response MUST use this exact format:**
+\`\`\`
 ## Understanding Your Request
-
-[2-3 sentences summarizing what you understood]
+[Business summary - what the user wants, NOT how you'll implement it]
 
 ## Clarification Questions
 
-1. **[Topic - e.g., "Data Scope"]**
+1. **[Topic]**
    - Question: [Non-technical user question]
-   - 💡 Recommendation: [Simple default choice]
+   - 💡 Recommendation: [Default choice]
 
-2. **[Topic - e.g., "Empty States"]**
+2. **[Topic]**  
    - Question: [Non-technical user question]
-   - 💡 Recommendation: [Simple default choice]
+   - 💡 Recommendation: [Default choice]
 
-(Add as many questions as needed - all must be non-technical)
+(Add as many questions as needed)
 
-**Quick Option:** Reply "go with recommendations" to accept all defaults.
----
+**Reply "go with recommendations" to proceed.**
+\`\`\`
 
-**STEP 3: Create Tickets (Only After User Responds)**
-⚠️  **CRITICAL: Call write_tickets ONCE, then STOP IMMEDIATELY**
+⚠️ **NEVER say**: "I'll implement", "Let me implement", "Now I'll build", "Let's start"
+✅ **INSTEAD say**: "I'll create tickets for", "The tickets will include"
 
-- Wait for user to answer your questions
-- Call write_tickets tool ONE TIME with all tickets in the array
-- After the tool returns success, STOP - do not call ANY other tools
-- DO NOT write explanations or summaries after write_tickets
-- The tool response is your final output
+**ALLOWED QUESTIONS (User/Business Focus):**
+- What data to show/hide
+- Empty state behavior
+- Error messages the user sees
+- Permission rules (who can do what)
+- User workflow and steps
 
-**Ticket Types & Prefixes:**
-- \`PLAN-SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
-- \`PLAN-ENGINE-N\`: Python microservice (FastAPI endpoints)
-- \`PLAN-BACKEND-N\`: API/server-side logic (tRPC, server actions)
-- \`PLAN-FRONTEND-N\`: UI components and pages (React, Next.js)
+**FORBIDDEN QUESTIONS (Technical Implementation):**
+- Which library to use (jsPDF, PDFKit, Puppeteer)
+- Backend vs client-side generation
+- API design (REST, tRPC, GraphQL)
+- File paths or code organization
+- Database queries or ORM choice
+- Component structure or styling approach
+- Performance optimization techniques
 
-**When to use ENGINE vs BACKEND:**
-- **Use BACKEND (Next.js)** for: CRUD operations, auth logic, business rules, anything TypeScript handles well (90% of features)
-- **Use ENGINE (Python)** for: ML/AI, data science (numpy/pandas), complex algorithms, PDF/document parsing, image processing, or when Python libraries are required${
-    noTest
-      ? ''
-      : `
-- \`PLAN-WEB-TEST-N\`: E2E tests (Playwright, browser testing)`
-  }
+**YOU decide all technical choices** based on the existing codebase.
 
-**Ticket Order (build system processes in this order):**
-1. PLAN-SCHEMA tickets first (database changes)
-2. PLAN-ENGINE tickets (Python microservice - so backend can call it)
-3. PLAN-BACKEND tickets (API layer)
-4. PLAN-FRONTEND tickets (UI layer)${
-    noTest
-      ? ''
-      : `
-5. PLAN-WEB-TEST tickets last (validate everything works)
+## Phase 2: Generate Tickets (NOT IMPLEMENTATION)
 
-**WEB TEST TICKETS - Playwright MCP E2E Tests:**
+⚠️ ⚠️ ⚠️ **CRITICAL: YOU ARE NOT IMPLEMENTING ANYTHING** ⚠️ ⚠️ ⚠️
 
-Web test tickets are executed by Playwright MCP with Claude AI. Follow these guidelines:
+**WHEN USER CONFIRMS/ANSWERS QUESTIONS:**
 
-**Test User Discovery:**
-- Read seed files (lib/db/seed.ts or src/lib/db/seed.ts) to find test users
-- Pattern: Any email ending with "+kosuke_test@example.com" uses OTP code "424242"
-- Example: john+kosuke_test@example.com → OTP: 424242
+DO NOT say "Now I'll implement", "Let me create the files", "Implementation Plan:", or ANY implementation language.
 
-**Each Web Test Ticket MUST Include:**
-1. **Test User Credentials** (at the top)
-   - Email addresses of test users
-   - OTP code: 424242
-   - User roles if applicable
+DO NOT read more files. DO NOT use Task tool. DO NOT search for packages.
 
-2. **Test Steps** (numbered, detailed natural language)
-   - Navigation: "Navigate to /sign-in"
-   - Interactions: "Click button labeled 'New Task'"
-   - Inputs: "Enter 'Test Task' in title field"
-   - Expected outcomes: "Expected: Task appears in list"
-   - Use CLEAR element descriptions (button text, labels)
+IMMEDIATELY output ONLY a valid JSON array of tickets. No markdown, no code blocks, no explanations, no plans.
 
-3. **Acceptance Criteria**
-   - Final expected state
-   - Data validation points
-
-**Authentication Steps Template:**
-1. Navigate to /sign-in
-2. Enter email: {test_user}+kosuke_test@example.com
-3. Click "Send Code" button
-4. Enter OTP: 424242
-5. Click "Verify" button
-6. Expected: Redirected to main app`
-  }
-
-**Ticket Generation Rules:**
-- Generate only the tickets actually needed
-- Ensure tickets are atomic and independently implementable
-- Include clear acceptance criteria in each ticket description
-
-**HOW TO OUTPUT TICKETS (CRITICAL - READ CAREFULLY):**
-⚠️  Once user responds, call write_tickets ONCE with all tickets
-⚠️  After calling write_tickets, STOP IMMEDIATELY - do NOT call ANY other tools
-⚠️  DO NOT call: Task, ExitPlanMode, Subagent - these are BLOCKED
-⚠️  DO NOT write summaries or explanations after write_tickets - the tool output is final
-⚠️  The system automatically validates, saves to tickets/{timestamp}.tickets.json, and displays results
-
-**CRITICAL:** write_tickets is your LAST action. Once called, you are DONE. No other tool calls allowed.
-
-**Example Tickets (Full JSON):**
+**Required JSON Format:**
 [
   {
-    "id": "PLAN-SCHEMA-1",
-    "title": "Create tasks schema",
-    "description": "Create database schema for tasks feature:\\n- Create taskStatusEnum: 'todo', 'in_progress', 'done'\\n- Create tasks table with userId foreign key\\n- Export inferred types\\n\\n**Acceptance Criteria:**\\n- Tasks table created\\n- Enums defined at database level\\n- Migrations generated\\n\\n**Technical Notes:**\\n- Follow existing schema patterns in lib/db/schema/\\n- Use Drizzle ORM conventions",
-    "type": "schema",
-    "estimatedEffort": 4,
-    "category": "tasks"
-  },
-  {
     "id": "PLAN-BACKEND-1",
-    "title": "Create tasks tRPC router",
-    "description": "Create backend API for tasks:\\n- Create lib/trpc/routers/tasks.ts\\n- Implement CRUD operations (list, create, update, delete)\\n- Server-side filtering by status\\n\\n**Acceptance Criteria:**\\n- All CRUD operations work\\n- Authorization enforced\\n- Type-safe implementation",
+    "title": "Add PDF export endpoint to orders router",
+    "description": "Create tRPC endpoint that generates PDF.\\n\\n**Acceptance Criteria:**\\n- Accepts filter parameters\\n- Returns PDF file\\n- Respects filters",
     "type": "backend",
     "estimatedEffort": 5,
-    "category": "tasks"
+    "status": "Todo",
+    "category": "orders"
   },
   {
     "id": "PLAN-FRONTEND-1",
-    "title": "Create tasks page with list and filters",
-    "description": "Create tasks management UI:\\n- Create app/(logged-in)/tasks/page.tsx\\n- Task list with status filters\\n- Add new task dialog\\n- Edit/delete actions\\n\\n**Acceptance Criteria:**\\n- Task list displays correctly\\n- Filters work\\n- CRUD operations functional\\n- Responsive design\\n\\n**Technical Notes:**\\n- Use existing UI components from components/ui/\\n- Follow page patterns from existing routes",
+    "title": "Add PDF export button to orders table",
+    "description": "Add button to toolbar.\\n\\n**Acceptance Criteria:**\\n- Button visible\\n- Downloads PDF\\n- Shows loading state",
     "type": "frontend",
-    "estimatedEffort": 6,
-    "category": "tasks"
-  },
+    "estimatedEffort": 4,
+    "status": "Todo",
+    "category": "orders"
+  }${
+    noTest
+      ? ''
+      : `,
   {
     "id": "PLAN-WEB-TEST-1",
-    "title": "E2E: User creates and manages tasks",
-    "description": "**Test User Credentials:**\\n- Email: john+kosuke_test@example.com\\n- OTP Code: 424242\\n\\n**Test Steps:**\\n\\n1. **Sign in**\\n   - Navigate to /sign-in\\n   - Enter email: john+kosuke_test@example.com\\n   - Click 'Send Code' button\\n   - Enter OTP: 424242\\n   - Click 'Verify'\\n   - Expected: Redirected to /tasks\\n\\n2. **Create task**\\n   - Click 'New Task' button\\n   - Enter title: 'Test Task'\\n   - Click 'Create'\\n   - Expected: Task appears in list\\n\\n3. **Delete task**\\n   - Click delete button on task\\n   - Confirm deletion\\n   - Expected: Task removed\\n\\n**Acceptance Criteria:**\\n- User authenticates successfully\\n- Task CRUD operations work\\n- UI provides feedback",
+    "title": "E2E: Test PDF export with filters",
+    "description": "**Test User:** john+kosuke_test@example.com (OTP: 424242)\\n\\n**Steps:**\\n1. Sign in\\n2. Apply filters\\n3. Click PDF export\\n4. Verify download\\n\\n**Acceptance Criteria:**\\n- PDF downloads\\n- Contains filtered data",
     "type": "test",
-    "estimatedEffort": 4,
-    "category": "tasks"
+    "estimatedEffort": 3,
+    "status": "Todo",
+    "category": "orders"
+  }`
   }
-]`;
-}
+]
 
-/**
- * Interactive planning session
- */
-async function interactivePlanSession(
-  initialPrompt: string,
-  cwd: string,
-  ticketsPath: string,
-  logContext?: ReturnType<typeof logger.createContext>,
-  noTest: boolean = false,
-  resumeSessionId?: string
-): Promise<{
-  ticketsPath: string | null;
-  tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
-  cost: number;
-  sessionId?: string;
-}> {
-  console.log(`
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    Kosuke Plan - AI-Driven Ticket Planning                   ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-  `);
+**CRITICAL - Exact Ticket ID Format (MUST MATCH):**
+- PLAN-SCHEMA-1, PLAN-SCHEMA-2, ... → type: "schema"
+- PLAN-ENGINE-1, PLAN-ENGINE-2, ... → type: "engine"
+- PLAN-BACKEND-1, PLAN-BACKEND-2, ... → type: "backend"
+- PLAN-FRONTEND-1, PLAN-FRONTEND-2, ... → type: "frontend"${noTest ? '' : '\n- PLAN-WEB-TEST-1, PLAN-WEB-TEST-2, ... → type: "test"'}
 
-  console.log(
-    '💡 This tool will help you create implementation tickets from your feature/bug description.\n'
-  );
-  console.log('🤖 Claude will explore your codebase to understand patterns and conventions.\n');
+**Required Fields (every ticket):**
+- id: Exact format above (NOT "PLAN-TEST-1", use "PLAN-WEB-TEST-1")
+- title: Short descriptive title
+- description: Details with **Acceptance Criteria:** section (use \\n for newlines)
+- type: MUST be one of: "schema", "engine", "backend", "frontend"${noTest ? '' : ', "test"'}
+- estimatedEffort: Integer from 1 to 10
+- status: ALWAYS "Todo"
+- category: Optional (e.g., "orders", "auth", "billing")
 
-  const systemPrompt = buildPlanSystemPrompt(noTest);
+**Dependency order:** SCHEMA → ENGINE → BACKEND → FRONTEND${noTest ? '' : ' → WEB-TEST'}
+${testGuidelines}
 
-  console.log('✨ Tip: Enter to submit, Ctrl+J for new lines.\n');
+🚨 **WHEN USER SAYS "go with recommendations" OR ANSWERS YOUR QUESTIONS:**
 
-  // Set up Ctrl+C handler
-  const handleSigInt = async () => {
-    console.log('\n\n👋 Exiting planning session...\n');
-    if (logContext) {
-      await logger.complete(logContext, 'cancelled');
-    }
-    process.exit(0);
-  };
-  process.on('SIGINT', handleSigInt);
+YOU ARE NOW IN PHASE 2. EXPLORATION IS OVER.
 
-  // Setup custom MCP server
-  const planMcpServer = createPlanMcpServer(ticketsPath, cwd);
+DO NOT:
+- Read more files
+- Search for packages
+- Say "Now I'll implement" or "Let me create"
+- Use Task tool
+- Show "Implementation Plan"
+- Add any text before or after the JSON
 
-  const session: PlanSession = {
-    prompt: initialPrompt,
-    sessionId: resumeSessionId,
-  };
+IMMEDIATELY OUTPUT THE JSON ARRAY. Your ENTIRE response = JSON array starting with "[" and ending with "]".
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheCreationTokens = 0;
-  let totalCacheReadTokens = 0;
-  let totalCost = 0;
-  let createdTicketsPath: string | null = null;
+❌ **WRONG RESPONSES TO "go with recommendations":**
 
-  try {
-    let continueConversation = true;
-    let currentPrompt = initialPrompt;
+\`\`\`
+Perfect! Now I'll implement the PDF export feature.
 
-    while (continueConversation) {
-      console.log('\n🤔 Claude is analyzing...\n');
+## Implementation Plan:
+1. Update schema...
+2. Install packages...
 
-      // Run agent with custom MCP server
-      const result = await runAgent(currentPrompt, {
-        systemPrompt,
-        cwd,
-        verbosity: 'verbose', // Show all output for interactive planning
-        mcpServers: {
-          'kosuke-plan': planMcpServer,
-        },
-        ...(session.sessionId && { resume: session.sessionId }),
-      });
+Let me start:
+📄 Reading package.json
+\`\`\`
 
-      // Store session ID for conversation continuity
-      if (result.sessionId) {
-        session.sessionId = result.sessionId;
-      }
+OR
 
-      // Track costs
-      totalInputTokens += result.tokensUsed.input;
-      totalOutputTokens += result.tokensUsed.output;
-      totalCacheCreationTokens += result.tokensUsed.cacheCreation;
-      totalCacheReadTokens += result.tokensUsed.cacheRead;
-      totalCost += result.cost;
+\`\`\`
+Great! I'll create the implementation tickets.
 
-      // Display cost
-      console.log('\n' + '─'.repeat(90));
-      console.log(`💰 Cost: ${formatCostBreakdown(result)}`);
-      console.log('─'.repeat(90) + '\n');
+\\\`\\\`\\\`json
+[...]
+\\\`\\\`\\\`
+\`\`\`
 
-      // Check if tickets file was created (saved immediately in MCP tool handler)
-      if (existsSync(ticketsPath)) {
-        createdTicketsPath = ticketsPath;
+OR
 
-        console.log('═'.repeat(90));
-        console.log('📊 Total Session Cost:');
-        console.log(
-          `💰 ${formatCostBreakdown({
-            tokensUsed: {
-              input: totalInputTokens,
-              output: totalOutputTokens,
-              cacheCreation: totalCacheCreationTokens,
-              cacheRead: totalCacheReadTokens,
-            },
-            cost: totalCost,
-            response: '',
-            fixCount: 0,
-            filesReferenced: new Set(),
-          })}`
-        );
-        console.log('═'.repeat(90));
-        // Get relative path for cleaner output
-        const relativeTicketsPath = ticketsPath.replace(cwd + '/', '');
-        console.log('\n🎉 Planning complete!\n');
-        console.log('💡 Next steps:');
-        console.log('   - Review tickets: cat "' + ticketsPath + '"');
-        console.log(
-          '   - Build tickets: kosuke build --directory="' +
-            cwd +
-            '" --tickets="' +
-            relativeTicketsPath +
-            '"'
-        );
-        console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
-        if (session.sessionId) {
-          console.log(`\n💾 Session ID: ${session.sessionId}`);
-        }
-        continueConversation = false;
-        break;
-      }
+\`\`\`
+Now I'll update the files:
+[...]
+\`\`\`
 
-      // Ask for user response
-      console.log('💬 Your response (type "exit" to quit):\n');
-      const userResponse = await askQuestion('You: ');
+✅ **CORRECT RESPONSE TO "go with recommendations":**
 
-      if (!userResponse) {
-        console.log('\n⚠️  Empty response. Please provide an answer or type "exit".');
-        continue;
-      }
-
-      if (userResponse.toLowerCase() === 'exit') {
-        console.log('\n👋 Exiting planning session.\n');
-        if (session.sessionId) {
-          console.log('💾 Session ID (to resume later):');
-          console.log(`   ${session.sessionId}\n`);
-          console.log(
-            '   Resume with: kosuke plan --prompt="continue" --resume=' + session.sessionId + '\n'
-          );
-        }
-        console.log('═'.repeat(90));
-        console.log('📊 Session Cost:');
-        console.log(
-          `💰 ${formatCostBreakdown({
-            tokensUsed: {
-              input: totalInputTokens,
-              output: totalOutputTokens,
-              cacheCreation: totalCacheCreationTokens,
-              cacheRead: totalCacheReadTokens,
-            },
-            cost: totalCost,
-            response: '',
-            fixCount: 0,
-            filesReferenced: new Set(),
-          })}`
-        );
-        console.log('═'.repeat(90) + '\n');
-        continueConversation = false;
-        break;
-      }
-
-      // Set next prompt for conversation continuity
-      currentPrompt = userResponse;
-    }
-  } catch (error) {
-    console.error('\n❌ Error during planning:', error);
-    throw error;
-  } finally {
-    process.removeListener('SIGINT', handleSigInt);
+\`\`\`
+[
+  {
+    "id": "PLAN-BACKEND-1",
+    "title": "Add PDF export endpoint",
+    "description": "...",
+    "type": "backend",
+    "estimatedEffort": 5,
+    "status": "Todo",
+    "category": "orders"
   }
+]
+\`\`\`
 
-  return {
-    ticketsPath: createdTicketsPath,
-    tokensUsed: {
-      input: totalInputTokens,
-      output: totalOutputTokens,
-      cacheCreation: totalCacheCreationTokens,
-      cacheRead: totalCacheReadTokens,
-    },
-    cost: totalCost,
-    sessionId: session.sessionId,
-  };
+NO explanatory text. NO "Now I'll implement". NO markdown wrapping. JUST THE JSON ARRAY.`;
 }
-
 /**
- * Core plan function for programmatic use
+ * Shared setup for plan agent configuration
  */
-export async function planCore(options: PlanOptions): Promise<PlanResult> {
-  const { prompt, directory, noTest = false } = options;
+function createPlanAgentConfig(options: PlanOptions):
+  | {
+      config: AgentConfig;
+      ticketsPath: string;
+      cwd: string;
+      prompt: string;
+    }
+  | { error: string } {
+  const { prompt, directory, noTest = false, resume } = options;
 
   // Validate directory
   const cwd = directory ? resolve(directory) : process.cwd();
 
   if (!existsSync(cwd)) {
-    return {
-      success: false,
-      ticketsFile: null,
-      tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-      cost: 0,
-      error: `Directory not found: ${cwd}`,
-    };
+    return { error: `Directory not found: ${cwd}` };
   }
 
   const stats = statSync(cwd);
   if (!stats.isDirectory()) {
-    return {
-      success: false,
-      ticketsFile: null,
-      tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-      cost: 0,
-      error: `Path is not a directory: ${cwd}`,
-    };
+    return { error: `Path is not a directory: ${cwd}` };
   }
 
   const ticketsPath = generateTicketsPath(cwd);
+  const systemPrompt = buildPlanSystemPrompt(noTest);
+
+  const config: AgentConfig = {
+    systemPrompt,
+    cwd,
+    maxTurns: 40, // Increased for complex planning sessions with multiple files to analyze
+    verbosity: 'verbose',
+    permissionMode: 'bypassPermissions',
+    // Restrict to read-only tools only
+    // Block all code editing, execution, task management, and agent control tools
+    disallowedTools: [
+      'Edit', // File editing
+      'Write', // File creation
+      'Delete', // File deletion
+      'NotebookEdit', // Notebook editing
+      'Bash', // Shell execution
+      'Task', // Sub-agent spawning (prevents implementation subtasks)
+      'TodoWrite', // Task management (implementation mode)
+      'ExitPlanMode', // Mode transitions
+    ],
+    ...(resume && { resume }),
+  };
+
+  return { config, ticketsPath, cwd, prompt };
+}
+
+/**
+ * Plan core stream for server (async generator, no logging)
+ */
+export async function* planCoreStream(
+  options: PlanOptions
+): AsyncGenerator<PlanStreamEvent, void, void> {
+  const setup = createPlanAgentConfig(options);
+
+  if ('error' in setup) {
+    yield {
+      type: 'done',
+      data: {
+        status: 'error',
+        ticketsFile: null,
+        tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: 0,
+        error: setup.error,
+      },
+    };
+    return;
+  }
+
+  const { config, ticketsPath, prompt } = setup;
 
   try {
-    const result = await interactivePlanSession(
-      prompt,
-      cwd,
-      ticketsPath,
-      undefined,
-      noTest,
-      options.resume
-    );
+    const stream = runAgentStream(prompt, config);
 
-    return {
-      success: result.ticketsPath !== null,
-      ticketsFile: result.ticketsPath,
-      tokensUsed: result.tokensUsed,
-      cost: result.cost,
-      sessionId: result.sessionId,
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+    let sessionId: string | undefined;
+    let fullResponse = '';
+
+    // Yield raw Claude messages
+    for await (const message of stream) {
+      const claudeMessage = message as ClaudeMessage;
+      yield { type: 'message', data: claudeMessage };
+
+      // Track session ID
+      if (claudeMessage.session_id) {
+        sessionId = claudeMessage.session_id;
+      }
+
+      // Accumulate response text from assistant messages
+      if (claudeMessage.type === 'assistant' && claudeMessage.message) {
+        const msg = claudeMessage.message as {
+          content?: Array<{ type: string; text?: string }>;
+        };
+        if (msg.content && Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'text' && block.text) {
+              fullResponse += block.text;
+            }
+          }
+        }
+      }
+
+      // Track tokens
+      if (
+        claudeMessage.type === 'result' &&
+        claudeMessage.subtype === 'success' &&
+        claudeMessage.usage
+      ) {
+        const usage = claudeMessage.usage;
+        inputTokens += usage.input_tokens || 0;
+        outputTokens += usage.output_tokens || 0;
+        cacheCreationTokens += usage.cache_creation_input_tokens || 0;
+        cacheReadTokens += usage.cache_read_input_tokens || 0;
+      }
+    }
+
+    const cost = calculateCost(inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens);
+
+    // Try to parse tickets from response (Phase 2)
+    try {
+      let tickets = parseTickets(fullResponse);
+      tickets = sortTicketsByOrder(tickets);
+      writeTicketsFile(ticketsPath, tickets);
+
+      yield {
+        type: 'done',
+        data: {
+          status: 'success',
+          ticketsFile: ticketsPath,
+          tokensUsed: {
+            input: inputTokens,
+            output: outputTokens,
+            cacheCreation: cacheCreationTokens,
+            cacheRead: cacheReadTokens,
+          },
+          cost,
+          sessionId,
+        },
+      };
+    } catch (parseError) {
+      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+
+      // Check if this is a parse/validation error or just Phase 1
+      if (errorMsg.includes('No JSON array found')) {
+        // This is Phase 1 (clarification questions)
+        yield {
+          type: 'done',
+          data: {
+            status: 'input_required',
+            ticketsFile: null,
+            tokensUsed: {
+              input: inputTokens,
+              output: outputTokens,
+              cacheCreation: cacheCreationTokens,
+              cacheRead: cacheReadTokens,
+            },
+            cost,
+            sessionId,
+          },
+        };
+      } else {
+        // Actual validation error
+        yield {
+          type: 'done',
+          data: {
+            status: 'error',
+            ticketsFile: null,
+            tokensUsed: {
+              input: inputTokens,
+              output: outputTokens,
+              cacheCreation: cacheCreationTokens,
+              cacheRead: cacheReadTokens,
+            },
+            cost: 0,
+            error: errorMsg,
+          },
+        };
+      }
+    }
+  } catch (error) {
+    yield {
+      type: 'done',
+      data: {
+        status: 'error',
+        ticketsFile: null,
+        tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        cost: 0,
+        error: error instanceof Error ? error.message : String(error),
+      },
     };
+  }
+}
+
+/**
+ * Plan interactive session for CLI (single turn with logging)
+ */
+async function planInteractiveSession(options: PlanOptions): Promise<PlanResult> {
+  const setup = createPlanAgentConfig(options);
+
+  if ('error' in setup) {
+    return {
+      status: 'error',
+      ticketsFile: null,
+      tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+      cost: 0,
+      error: setup.error,
+    };
+  }
+
+  const { config, ticketsPath, prompt } = setup;
+
+  try {
+    console.log('\n🤔 Claude is analyzing...\n');
+
+    // Run agent with logging
+    const result = await runAgent(prompt, config);
+
+    // Display cost
+    console.log('\n' + '─'.repeat(90));
+    console.log(`💰 Cost: ${formatCostBreakdown(result)}`);
+    console.log('─'.repeat(90) + '\n');
+
+    // Try to parse tickets from response (Phase 2)
+    try {
+      const tickets = parseTickets(result.response);
+
+      // Validate ticket ID format matches type
+      for (const ticket of tickets) {
+        const idPrefix = ticket.id.split('-').slice(0, 2).join('-'); // PLAN-SCHEMA, PLAN-BACKEND, etc.
+        const expectedPrefix = `PLAN-${ticket.type === 'test' ? 'WEB-TEST' : ticket.type.toUpperCase()}`;
+
+        if (idPrefix !== expectedPrefix) {
+          throw new Error(
+            `Invalid ticket ID format: "${ticket.id}". Expected prefix "${expectedPrefix}" for type "${ticket.type}". ` +
+              `Example: ${expectedPrefix}-1, ${expectedPrefix}-2, etc.`
+          );
+        }
+      }
+
+      // Successfully parsed and validated - write to file
+      writeTicketsFile(ticketsPath, tickets);
+
+      console.log(`\n✅ Successfully created ${tickets.length} tickets: ${ticketsPath}\n`);
+
+      return {
+        status: 'success',
+        ticketsFile: ticketsPath,
+        tokensUsed: result.tokensUsed,
+        cost: result.cost,
+        sessionId: result.sessionId,
+        message: result.response,
+      };
+    } catch (parseError) {
+      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+
+      // Check if this is a parse/validation error or just Phase 1
+      if (errorMsg.includes('No JSON array found')) {
+        // This is Phase 1 (clarification questions)
+        return {
+          status: 'input_required',
+          ticketsFile: null,
+          tokensUsed: result.tokensUsed,
+          cost: result.cost,
+          sessionId: result.sessionId,
+          message: result.response,
+        };
+      }
+
+      // Actual validation error - show it
+      console.error(`\n❌ Ticket validation failed: ${errorMsg}\n`);
+      return {
+        status: 'error',
+        ticketsFile: null,
+        tokensUsed: result.tokensUsed,
+        cost: result.cost,
+        error: errorMsg,
+      };
+    }
   } catch (error) {
     return {
-      success: false,
+      status: 'error',
       ticketsFile: null,
       tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
       cost: 0,
@@ -597,7 +610,7 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
 }
 
 /**
- * Main plan command
+ * Main plan command (interactive CLI wrapper)
  */
 export async function planCommand(options: PlanOptions): Promise<void> {
   // Initialize logging
@@ -630,25 +643,150 @@ export async function planCommand(options: PlanOptions): Promise<void> {
       throw new Error(`Path is not a directory: ${cwd}`);
     }
 
+    console.log(`
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    Kosuke Plan - AI-Driven Ticket Planning                   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+  `);
+
+    console.log(
+      '💡 This tool will help you create implementation tickets from your feature/bug description.\n'
+    );
+    console.log('🤖 Claude will explore your codebase to understand patterns and conventions.\n');
+    console.log('✨ Tip: Enter to submit, Ctrl+J for new lines.\n');
+
     console.log(`📁 Using project directory: ${cwd}\n`);
 
-    const ticketsPath = generateTicketsPath(cwd);
+    // Set up Ctrl+C handler
+    const handleSigInt = async () => {
+      console.log('\n\n👋 Exiting planning session...\n');
+      await logger.complete(logContext, 'cancelled');
+      cleanupHandler();
+      process.exit(0);
+    };
+    process.on('SIGINT', handleSigInt);
 
-    // Run interactive session
-    const sessionData = await interactivePlanSession(
-      options.prompt,
-      cwd,
-      ticketsPath,
-      logContext,
-      options.noTest ?? false,
-      options.resume
-    );
+    let currentPrompt = options.prompt;
+    let sessionId = options.resume;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheCreationTokens = 0;
+    let totalCacheReadTokens = 0;
+    let totalCost = 0;
 
-    // Track metrics
-    logger.trackTokens(logContext, sessionData.tokensUsed);
+    try {
+      // Interactive loop
+      while (true) {
+        const result = await planInteractiveSession({
+          prompt: currentPrompt,
+          directory: cwd,
+          noTest: options.noTest,
+          resume: sessionId,
+        });
 
-    // Log successful execution
-    await logger.complete(logContext, 'success');
+        // Track cumulative costs
+        totalInputTokens += result.tokensUsed.input;
+        totalOutputTokens += result.tokensUsed.output;
+        totalCacheCreationTokens += result.tokensUsed.cacheCreation;
+        totalCacheReadTokens += result.tokensUsed.cacheRead;
+        totalCost += result.cost;
+
+        sessionId = result.sessionId;
+
+        if (result.status === 'success') {
+          // Planning complete
+          console.log('═'.repeat(90));
+          console.log('📊 Total Session Cost:');
+          console.log(
+            `💰 ${formatCostBreakdown({
+              tokensUsed: {
+                input: totalInputTokens,
+                output: totalOutputTokens,
+                cacheCreation: totalCacheCreationTokens,
+                cacheRead: totalCacheReadTokens,
+              },
+              cost: totalCost,
+              response: '',
+              fixCount: 0,
+              filesReferenced: new Set(),
+            })}`
+          );
+          console.log('═'.repeat(90));
+
+          const relativeTicketsPath = result.ticketsFile!.replace(cwd + '/', '');
+          console.log('\n🎉 Planning complete!\n');
+          console.log('💡 Next steps:');
+          console.log('   - Review tickets: cat "' + result.ticketsFile + '"');
+          console.log(
+            '   - Build tickets: kosuke build --directory="' +
+              cwd +
+              '" --tickets="' +
+              relativeTicketsPath +
+              '"'
+          );
+          console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
+          if (sessionId) {
+            console.log(`\n💾 Session ID: ${sessionId}`);
+          }
+
+          logger.trackTokens(logContext, {
+            input: totalInputTokens,
+            output: totalOutputTokens,
+            cacheCreation: totalCacheCreationTokens,
+            cacheRead: totalCacheReadTokens,
+          });
+          await logger.complete(logContext, 'success');
+          break;
+        } else if (result.status === 'input_required') {
+          // Ask for user response
+          console.log('💬 Your response (type "exit" to quit):\n');
+          const userResponse = await askQuestion('You: ');
+
+          if (!userResponse) {
+            console.log('\n⚠️  Empty response. Please provide an answer or type "exit".');
+            continue;
+          }
+
+          if (userResponse.toLowerCase() === 'exit') {
+            console.log('\n👋 Exiting planning session.\n');
+            if (sessionId) {
+              console.log('💾 Session ID (to resume later):');
+              console.log(`   ${sessionId}\n`);
+              console.log(
+                '   Resume with: kosuke plan --prompt="continue" --resume=' + sessionId + '\n'
+              );
+            }
+            console.log('═'.repeat(90));
+            console.log('📊 Session Cost:');
+            console.log(
+              `💰 ${formatCostBreakdown({
+                tokensUsed: {
+                  input: totalInputTokens,
+                  output: totalOutputTokens,
+                  cacheCreation: totalCacheCreationTokens,
+                  cacheRead: totalCacheReadTokens,
+                },
+                cost: totalCost,
+                response: '',
+                fixCount: 0,
+                filesReferenced: new Set(),
+              })}`
+            );
+            console.log('═'.repeat(90) + '\n');
+            await logger.complete(logContext, 'cancelled');
+            break;
+          }
+
+          currentPrompt = userResponse;
+        } else {
+          // Error
+          throw new Error(result.error || 'Unknown error during planning');
+        }
+      }
+    } finally {
+      process.removeListener('SIGINT', handleSigInt);
+    }
+
     cleanupHandler();
   } catch (error) {
     console.error('\n❌ Plan command failed:', error);

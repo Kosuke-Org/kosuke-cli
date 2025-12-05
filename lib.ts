@@ -74,7 +74,7 @@ export { analyseCommand } from './kosuke/commands/analyse.js';
 export { lintCommand, fixCodeQualityErrors, fixLintErrors } from './kosuke/commands/lint.js';
 export { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 export { requirementsCommand, requirementsCore } from './kosuke/commands/requirements.js';
-export { planCommand, planCore } from './kosuke/commands/plan.js';
+export { planCommand, planCoreStream } from './kosuke/commands/plan.js';
 export { getCodeCore } from './kosuke/commands/getcode.js';
 export { ticketsCore } from './kosuke/commands/tickets.js';
 export { shipCore } from './kosuke/commands/ship.js';
@@ -153,10 +153,17 @@ export type {
 } from './kosuke/types.js';
 
 export type { ValidationResult } from './kosuke/utils/validator.js';
-export type { AgentVerbosity, AgentConfig, AgentResult } from './kosuke/utils/claude-agent.js';
+export type {
+  AgentVerbosity,
+  AgentConfig,
+  AgentResult,
+  ClaudeMessage,
+  ParsedToolAction,
+} from './kosuke/utils/claude-agent.js';
 export type { RequirementsOptions, RequirementsResult } from './kosuke/commands/requirements.js';
-export type { PlanResult } from './kosuke/commands/plan.js';
+export type { PlanResult, PlanStreamEvent } from './kosuke/commands/plan.js';
 export type { TicketReviewResult } from './kosuke/utils/tickets-manager.js';
+export { createServer, startServer, type ServeOptions } from './kosuke/serve/server.js';
 
 // Export version from package.json
 export const version = packageJson.version;
