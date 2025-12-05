@@ -1,19 +1,13 @@
 /**
- * Tickets command - Generate tickets from requirements document or prompt
+ * Tickets command - Generate tickets from requirements document
  *
- * This command has two modes:
+ * Generates tickets directly from a requirements document.
+ * No clarification questions - assumes requirements are complete.
+ * Best for: New projects with detailed requirements from `kosuke requirements`.
  *
- * 1. PROMPT MODE (--prompt flag):
- *    Uses the `plan` command internally for interactive ticket creation.
- *    Claude asks clarification questions before generating tickets.
- *    Best for: Adding features or fixing bugs in existing projects.
+ * For interactive ticket creation with questions, use: kosuke plan --prompt="..."
  *
- * 2. DOCUMENT MODE (--path or docs.md):
- *    Generates tickets directly from a requirements document.
- *    No clarification questions - assumes requirements are complete.
- *    Best for: New projects with detailed requirements from `kosuke requirements`.
- *
- * SCAFFOLD MODE (--scaffold flag, document mode only):
+ * SCAFFOLD MODE (--scaffold flag):
  *   SCAFFOLD BATCH (template adaptation):
  *     1. SCAFFOLD-SCHEMA-1 (ONE ticket for ALL database infrastructure changes)
  *     2. SCAFFOLD-BACKEND-X → SCAFFOLD-FRONTEND-X → SCAFFOLD-WEB-TEST-X (feature-by-feature)
@@ -33,11 +27,9 @@
  *   3. Outputs validated tickets.json
  *
  * Usage:
- *   kosuke tickets                                    # Use docs.md (no questions)
+ *   kosuke tickets                                    # Use docs.md
  *   kosuke tickets --scaffold                         # Scaffold + logic from docs.md
  *   kosuke tickets --path=custom.md                   # Custom requirements file
- *   kosuke tickets --prompt="Add dark mode"           # Interactive with questions
- *   kosuke tickets --prompt="Fix login bug" --dir=./  # Interactive with questions
  */
 
 import { existsSync, readFileSync, statSync } from 'fs';
@@ -45,8 +37,7 @@ import { join, resolve } from 'path';
 import type { TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { loadTicketsFile, parseTickets, processAndWriteTickets } from '../utils/tickets-manager.js';
-import { planCore } from './plan.js';
+import { parseTickets, processAndWriteTickets } from '../utils/tickets-manager.js';
 
 /**
  * Build unified system prompt for comprehensive ticket generation
@@ -378,56 +369,8 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     `🏗️  Mode: ${isScaffoldMode ? 'Scaffold (template adaptation + business logic)' : 'Logic-only (business features)'}\n`
   );
 
-  // 2. Get requirements content (from prompt or file)
+  // 2. Get requirements content from file
   let requirementsContent: string;
-
-  if (options.prompt && options.path) {
-    throw new Error(
-      'Cannot use both --prompt and --path. Please provide only one:\n' +
-        '  kosuke tickets --prompt="Add dark mode"\n' +
-        '  kosuke tickets --path=docs.md'
-    );
-  }
-
-  // If prompt is provided (without path), use plan command for interactive ticket creation
-  if (options.prompt && !options.path) {
-    console.log('📝 Using interactive planning mode for prompt-based ticket creation...\n');
-
-    const planResult = await planCore({
-      prompt: options.prompt,
-      directory: projectPath,
-      noTest: options.noTest,
-      noLogs: options.noLogs,
-    });
-
-    if (!planResult.success || !planResult.ticketsFile) {
-      throw new Error(planResult.error || 'Plan command failed');
-    }
-
-    // Load tickets from file
-    const ticketsFile = loadTicketsFile(planResult.ticketsFile);
-    const tickets = ticketsFile.tickets;
-
-    // Convert plan result to tickets result format
-    const schemaTickets = tickets.filter((t) => t.type === 'schema');
-    const engineTickets = tickets.filter((t) => t.type === 'engine');
-    const backendTickets = tickets.filter((t) => t.type === 'backend');
-    const frontendTickets = tickets.filter((t) => t.type === 'frontend');
-    const testTickets = tickets.filter((t) => t.type === 'test');
-
-    return {
-      schemaTickets,
-      engineTickets,
-      backendTickets,
-      frontendTickets,
-      testTickets,
-      totalTickets: tickets.length,
-      projectPath,
-      tokensUsed: planResult.tokensUsed,
-      cost: planResult.cost,
-      conversationMessages: [],
-    };
-  }
 
   if (options.path) {
     const requirementsPath = join(projectPath, options.path);
@@ -441,15 +384,16 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
     requirementsContent = readFileSync(requirementsPath, 'utf-8');
     console.log(`📄 Loaded ${options.path} (${requirementsContent.length} characters)\n`);
   } else {
-    // Default to docs.md if neither prompt nor path provided
+    // Default to docs.md if path not provided
     const defaultPath = 'docs.md';
     const requirementsPath = join(projectPath, defaultPath);
     if (!existsSync(requirementsPath)) {
       throw new Error(
-        'Requirements not provided. Use either:\n' +
-          '  --prompt="Your requirements here"\n' +
-          '  --path=requirements.md\n' +
-          '  Or create a docs.md file in the project directory'
+        'Requirements document not found. Use either:\n' +
+          '  --path=requirements.md (custom file)\n' +
+          '  Or create a docs.md file in the project directory\n\n' +
+          'For interactive ticket creation with questions, use:\n' +
+          '  kosuke plan --prompt="Your feature description"'
       );
     }
     requirementsContent = readFileSync(requirementsPath, 'utf-8');

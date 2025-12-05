@@ -58,8 +58,8 @@
 | **getcode**      | repository-manager, repository-resolver | -                    | Core         | Explore GitHub repositories               |
 | **sync-rules**   | -                                       | -                    | Core         | Sync CLAUDE.md rules from template        |
 | **requirements** | -                                       | -                    | Core         | Interactive requirements gathering        |
-| **plan**         | ticket-writer.ts                        | tickets (--prompt)   | Core         | Interactive ticket planning with Q&A      |
-| **tickets**      | plan (--prompt), ticket-writer.ts       | -                    | Core         | Generate tickets from doc or prompt       |
+| **plan**         | ticket-writer.ts, session management    | tickets (--prompt)   | Core         | Interactive ticket planning with Q&A      |
+| **tickets**      | ticket-writer.ts                        | -                    | Core         | Generate tickets from requirements doc    |
 | **lint**         | validator.ts                            | review, ship, build  | Core         | Fix linting errors with Claude            |
 | **migrate**      | claude-agent.ts                         | build (after SCHEMA) | Core         | Apply migrations, seed DB, validate       |
 | **review**       | reviewCore, lint                        | ship (conditional)   | Wrapper      | Review git diff against CLAUDE.md         |
@@ -134,17 +134,14 @@ requirements
 
 plan (interactive ticket planning)
 ├── Anthropic SDK directly (custom tools for exploration)
+├── Multi-turn conversation with session resumption
 ├── Interactive Q&A with clarification questions
 └── ticket-writer.ts (validation and writing)
     └─► Creates: tickets.json with PLAN-* prefixed tickets
+    └─► Returns: Session ID for resuming later
 
-tickets (three modes)
-├── PROMPT MODE (--prompt flag):
-│   └── plan (delegates to plan command)
-│       ├── Interactive Q&A with clarification questions
-│       └── ticket-writer.ts (validation and writing)
-│           └─► Creates: tickets.json with PLAN-* prefixed tickets
-├── SCAFFOLD MODE (--scaffold flag, document mode):
+tickets (two modes - document-based only)
+├── SCAFFOLD MODE (--scaffold flag):
 │   ├── Scaffold batch:
 │   │   ├── claude-agent.ts (schema scaffold, auto-validated by migrate)
 │   │   ├── claude-agent.ts (backend scaffold)
@@ -161,6 +158,8 @@ tickets (three modes)
     ├── claude-agent.ts (backend logic, if needed)
     ├── claude-agent.ts (frontend logic, if needed)
     └── claude-agent.ts (web-tests, if implementation)
+
+Note: For interactive ticket generation with prompts, use plan command instead
 ```
 
 ## External Dependencies
@@ -207,20 +206,18 @@ NEW PROJECT (with Kosuke Template):
 
 EXISTING PROJECT (add features):
 
-Option A: Using plan directly (interactive)
 1. plan --prompt="Add dark mode toggle"  → Interactive Q&A
    └─► Creates: tickets.json with PLAN-* tickets
+       Explores codebase BEFORE asking questions
        Asks clarification questions (non-technical)
        Reply "go with recommendations" to accept defaults
-
-Option B: Using tickets --prompt (same as plan)
-1. tickets --prompt="Add dark mode toggle"  → Delegates to plan
-   └─► Creates: tickets.json with PLAN-* tickets
-       Same interactive Q&A as plan command
+       Session ID displayed for resuming later (exit early or continue)
 
 2. build                 → Same as above (batch process tickets)
 
-Alternative: ship --ticket=ID [--review]  → Implement individual tickets manually (no commits)
+Alternative workflows:
+- ship --ticket=ID [--review]  → Implement individual tickets manually (no commits)
+- tickets --path=feature.md → Generate tickets from requirements document (no questions)
 ```
 
 ### Maintenance Workflow
@@ -245,17 +242,17 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 
 ### Common Options (Multiple Commands)
 
-| Option               | Commands                   | Description                                                     |
-| -------------------- | -------------------------- | --------------------------------------------------------------- |
-| `--pr`               | sync-rules, analyse, lint  | Create pull request with changes                                |
-| `--base-branch=NAME` | sync-rules, analyse, lint  | Base branch for PR (default: current)                           |
-| `--directory=PATH`   | lint, tickets, ship, build | Working directory (default: cwd)                                |
-| `--dir=PATH`         | tickets, ship, build       | Alias for --directory                                           |
-| `--tickets=FILE`     | ship, build                | Path to tickets.json file                                       |
-| `--verbose`          | build, test                | Enable verbose output (shows Claude tool usage and exploration) |
-| `--headless`         | build, test                | Run browser in headless mode for web tests                      |
-| `--trace`            | build, test                | Enable Playwright trace recording (saves video/screenshots)     |
-| `--no-logs`          | All commands               | Disable logging to Kosuke API                                   |
+| Option               | Commands                         | Description                                                     |
+| -------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `--pr`               | sync-rules, analyse, lint        | Create pull request with changes                                |
+| `--base-branch=NAME` | sync-rules, analyse, lint        | Base branch for PR (default: current)                           |
+| `--directory=PATH`   | plan, lint, tickets, ship, build | Working directory (default: cwd)                                |
+| `--dir=PATH`         | plan, tickets, ship, build       | Alias for --directory                                           |
+| `--tickets=FILE`     | ship, build                      | Path to tickets.json file                                       |
+| `--verbose`          | build, test                      | Enable verbose output (shows Claude tool usage and exploration) |
+| `--headless`         | build, test                      | Run browser in headless mode for web tests                      |
+| `--trace`            | build, test                      | Enable Playwright trace recording (saves video/screenshots)     |
+| `--no-logs`          | All commands                     | Disable logging to Kosuke API                                   |
 
 ### Command-Specific Options
 
@@ -268,38 +265,35 @@ getcode --template "<query>"           → Explore kosuke-template (shorthand)
 - `--prompt="..."` - Feature or bug description (required)
 - `--directory=PATH` - Directory with existing code (default: cwd)
 - `--dir=PATH` - Alias for --directory
+- `--resume=SESSION_ID` - Resume a previous planning session
 - `--output=FILE` - Output file for tickets (default: tickets.json)
 - `--no-test` - Skip PLAN-WEB-TEST ticket generation
 
 **Features:**
 
 - Interactive clarification questions (non-technical, user-focused)
-- Explores codebase to understand patterns
+- Explores codebase to understand patterns before asking questions
 - Reply "go with recommendations" to accept all defaults
 - Generates PLAN-\* prefixed tickets
+- Multi-turn conversation support with session resumption
+- Session ID displayed for resuming later
 
 Examples:
 
 - `kosuke plan --prompt="Add dark mode toggle"` - Interactive planning
 - `kosuke plan --prompt="Fix login bug" --dir=./app` - With directory
+- `kosuke plan --prompt="continue" --resume=<session-id>` - Resume previous session
 
 #### tickets
 
-- `--prompt="..."` - Feature/bug description (triggers interactive mode via plan)
 - `--path=FILE` - Path to requirements document (default: docs.md)
-- `--prompt="..."` - Inline requirements (alternative to --path)
 - `--scaffold` - Enable scaffold mode for new projects (default: logic-only mode)
 - `--directory=PATH` - Directory for Claude to explore (default: cwd)
 - `--dir=PATH` - Alias for --directory
 - `--output=FILE` - Output file for tickets (default: tickets.json)
 - `--no-test` - Skip WEB-TEST ticket generation
 
-**Prompt Mode (--prompt):**
-
-- Uses `plan` command internally for interactive ticket creation
-- Asks clarification questions before generating tickets
-- Generates PLAN-\* prefixed tickets
-- Best for: Adding features or fixing bugs in existing projects
+**Note:** For interactive ticket creation with clarification questions, use `kosuke plan --prompt="..."` instead.
 
 **Logic-Only Mode (default):**
 
@@ -317,10 +311,10 @@ Examples:
 
 Examples:
 
-- `kosuke tickets --prompt="Add dark mode toggle"` - Interactive with questions (uses plan)
-- `kosuke tickets` - Document mode from docs.md
-- `kosuke tickets --path=feature.md` - Document mode from custom file
+- `kosuke tickets` - Generate from docs.md (logic-only)
+- `kosuke tickets --path=feature.md` - Generate from custom file
 - `kosuke tickets --scaffold` - Scaffold + logic from docs.md
+- For interactive: `kosuke plan --prompt="Add dark mode toggle"`
 
 #### ship
 

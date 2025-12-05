@@ -107,6 +107,7 @@ async function main() {
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           noTest: args.includes('--no-test'),
           noLogs: args.includes('--no-logs'),
+          resume: args.find((arg) => arg.startsWith('--resume='))?.split('=')[1],
         };
 
         if (!options.prompt) {
@@ -115,6 +116,7 @@ async function main() {
           console.log('\nOptions:');
           console.log('  --prompt="..."       Feature or bug description (required)');
           console.log('  --directory=PATH     Directory with existing code (default: cwd)');
+          console.log('  --resume=SESSION_ID  Resume a previous planning session');
           console.log('  --no-test            Skip WEB-TEST ticket creation');
           console.log('\nOutput:');
           console.log('  Tickets are saved to tickets/{timestamp}.ticket.json');
@@ -122,6 +124,7 @@ async function main() {
           console.log('  kosuke plan --prompt="Add dark mode toggle"');
           console.log('  kosuke plan --prompt="Fix login timeout bug" --directory=./my-app');
           console.log('  kosuke plan --prompt="Add user notifications" --no-test');
+          console.log('  kosuke plan --prompt="continue" --resume=<session-id>');
           process.exit(1);
         }
 
@@ -325,6 +328,7 @@ COMMANDS:
       kosuke plan --prompt="Add dark mode toggle"
       kosuke plan --prompt="Fix login timeout bug" --directory=./my-app
       kosuke plan --prompt="Add user notifications" --no-test
+      kosuke plan --prompt="continue" --resume=<session-id>
 
     Features:
       - Analyzes codebase to understand existing patterns

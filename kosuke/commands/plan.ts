@@ -62,6 +62,7 @@ export interface PlanResult {
     cacheRead: number;
   };
   cost: number;
+  sessionId?: string; // Session ID for resuming later
   error?: string;
 }
 
@@ -349,11 +350,13 @@ async function interactivePlanSession(
   cwd: string,
   ticketsPath: string,
   logContext?: ReturnType<typeof logger.createContext>,
-  noTest: boolean = false
+  noTest: boolean = false,
+  resumeSessionId?: string
 ): Promise<{
   ticketsPath: string | null;
   tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
   cost: number;
+  sessionId?: string;
 }> {
   console.log(`
 ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -385,7 +388,7 @@ async function interactivePlanSession(
 
   const session: PlanSession = {
     prompt: initialPrompt,
-    sessionId: undefined,
+    sessionId: resumeSessionId,
   };
 
   let totalInputTokens = 0;
@@ -464,6 +467,9 @@ async function interactivePlanSession(
             '"'
         );
         console.log('   - List all tickets: ls ' + join(cwd, 'tickets'));
+        if (session.sessionId) {
+          console.log(`\n💾 Session ID: ${session.sessionId}`);
+        }
         continueConversation = false;
         break;
       }
@@ -479,6 +485,13 @@ async function interactivePlanSession(
 
       if (userResponse.toLowerCase() === 'exit') {
         console.log('\n👋 Exiting planning session.\n');
+        if (session.sessionId) {
+          console.log('💾 Session ID (to resume later):');
+          console.log(`   ${session.sessionId}\n`);
+          console.log(
+            '   Resume with: kosuke plan --prompt="continue" --resume=' + session.sessionId + '\n'
+          );
+        }
         console.log('═'.repeat(90));
         console.log('📊 Session Cost:');
         console.log(
@@ -519,6 +532,7 @@ async function interactivePlanSession(
       cacheRead: totalCacheReadTokens,
     },
     cost: totalCost,
+    sessionId: session.sessionId,
   };
 }
 
@@ -555,13 +569,21 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
   const ticketsPath = generateTicketsPath(cwd);
 
   try {
-    const result = await interactivePlanSession(prompt, cwd, ticketsPath, undefined, noTest);
+    const result = await interactivePlanSession(
+      prompt,
+      cwd,
+      ticketsPath,
+      undefined,
+      noTest,
+      options.resume
+    );
 
     return {
       success: result.ticketsPath !== null,
       ticketsFile: result.ticketsPath,
       tokensUsed: result.tokensUsed,
       cost: result.cost,
+      sessionId: result.sessionId,
     };
   } catch (error) {
     return {
@@ -618,7 +640,8 @@ export async function planCommand(options: PlanOptions): Promise<void> {
       cwd,
       ticketsPath,
       logContext,
-      options.noTest ?? false
+      options.noTest ?? false,
+      options.resume
     );
 
     // Track metrics
