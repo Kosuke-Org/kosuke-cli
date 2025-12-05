@@ -10,6 +10,7 @@ import {
   type Options,
   type PermissionMode,
   type SettingSource,
+  type McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -34,6 +35,8 @@ export interface AgentConfig {
   permissionMode?: PermissionMode;
   captureConversation?: boolean; // Enable full conversation capture (for tickets/requirements)
   settingSources?: SettingSource[]; // Where to load settings from (e.g., 'project' loads CLAUDE.md)
+  resume?: string; // Session ID to resume multi-turn conversation
+  mcpServers?: Record<string, McpServerConfig>; // Custom MCP servers with tools
 }
 
 /**
@@ -50,6 +53,7 @@ export interface AgentResult {
   cost: number;
   fixCount: number;
   filesReferenced: Set<string>;
+  sessionId?: string; // Session ID for multi-turn conversation continuity
   conversationMessages?: Array<{
     role: 'user' | 'assistant';
     content: string;
@@ -165,42 +169,80 @@ function formatToolArgs(input: unknown): string {
  * Log tool usage
  */
 function logToolUsage(toolName: string, toolInput: unknown, filesReferenced: Set<string>): void {
-  if (toolName === 'read_file' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { target_file?: string };
-    if (input.target_file) {
-      console.log(`   🔧 Reading ${input.target_file}`);
-      filesReferenced.add(input.target_file);
+  // Handle both SDK tool names (Read, Glob, Bash) and legacy names (read_file, glob_file_search, run_terminal_cmd)
+  if (
+    (toolName === 'Read' || toolName === 'read_file') &&
+    toolInput &&
+    typeof toolInput === 'object'
+  ) {
+    const input = toolInput as { file_path?: string; target_file?: string };
+    const filePath = input.file_path || input.target_file;
+    if (filePath) {
+      console.log(`   📄 Reading ${filePath}`);
+      filesReferenced.add(filePath);
     }
-  } else if (toolName === 'grep' && toolInput && typeof toolInput === 'object') {
+  } else if (
+    (toolName === 'Grep' || toolName === 'grep') &&
+    toolInput &&
+    typeof toolInput === 'object'
+  ) {
     const input = toolInput as { pattern?: string; path?: string };
     const pathInfo = input.path ? ` in ${input.path}` : '';
-    console.log(`   🔍 Searching for: ${input.pattern || 'pattern'}${pathInfo}`);
-  } else if (toolName === 'glob_file_search' && toolInput && typeof toolInput === 'object') {
-    const input = toolInput as { glob_pattern?: string; target_directory?: string };
+    console.log(`   🔍 Searching: ${input.pattern || 'pattern'}${pathInfo}`);
+  } else if (
+    (toolName === 'Glob' || toolName === 'glob_file_search') &&
+    toolInput &&
+    typeof toolInput === 'object'
+  ) {
+    const input = toolInput as {
+      pattern?: string;
+      glob_pattern?: string;
+      target_directory?: string;
+    };
+    const pattern = input.pattern || input.glob_pattern || '*';
     const dirInfo = input.target_directory ? ` in ${input.target_directory}` : '';
-    console.log(`   📁 Finding files: ${input.glob_pattern || '*'}${dirInfo}`);
-  } else if (toolName === 'codebase_search' && toolInput && typeof toolInput === 'object') {
+    console.log(`   📁 Finding: ${pattern}${dirInfo}`);
+  } else if (toolName === 'CodebaseSearch' && toolInput && typeof toolInput === 'object') {
     const input = toolInput as { query?: string; target_directories?: string[] };
     const dirInfo =
       input.target_directories && input.target_directories.length > 0
         ? ` in ${input.target_directories.join(', ')}`
         : '';
-    console.log(`   🔎 Searching codebase: ${input.query || 'query'}${dirInfo}`);
+    console.log(`   🔎 Codebase search: ${input.query || 'query'}${dirInfo}`);
   } else if (
+    toolName === 'Edit' ||
     toolName === 'write' ||
     toolName === 'search_replace' ||
-    toolName === 'edit' ||
     toolName === 'edit_notebook' ||
     toolName === 'delete_file'
   ) {
     // Don't log here - fixCount will handle it
-  } else if (toolName === 'run_terminal_cmd' && toolInput && typeof toolInput === 'object') {
+  } else if (
+    (toolName === 'Bash' || toolName === 'run_terminal_cmd') &&
+    toolInput &&
+    typeof toolInput === 'object'
+  ) {
     const input = toolInput as { command?: string };
     const cmd = input.command || 'command';
-    console.log(`   🔧 Running: ${cmd}`);
-  } else if (toolName === 'list_dir' && toolInput && typeof toolInput === 'object') {
+    // Truncate long commands
+    const displayCmd = cmd.length > 60 ? cmd.substring(0, 57) + '...' : cmd;
+    console.log(`   💻 Running: ${displayCmd}`);
+  } else if (
+    (toolName === 'ListDir' || toolName === 'list_dir') &&
+    toolInput &&
+    typeof toolInput === 'object'
+  ) {
     const input = toolInput as { target_directory?: string };
-    console.log(`   📂 Listing directory: ${input.target_directory || '.'}`);
+    console.log(`   📂 Listing: ${input.target_directory || '.'}`);
+  } else if (toolName.includes('write_tickets') && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as { tickets?: Array<{ id: string; title: string }> };
+    const ticketCount = input.tickets?.length || 0;
+    console.log(`   📋 Creating ${ticketCount} ticket${ticketCount !== 1 ? 's' : ''}...`);
+  } else if (toolName === 'Task' && toolInput && typeof toolInput === 'object') {
+    const input = toolInput as { subagent_type?: string; description?: string };
+    const taskType = input.subagent_type || 'Task';
+    const description = input.description || '';
+    console.log(`   🤖 ${taskType}: ${description}`);
   } else {
     // Generic tool logging with arguments
     const args = formatToolArgs(toolInput);
@@ -221,6 +263,8 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     permissionMode = 'bypassPermissions',
     captureConversation = false,
     settingSources = ['project'], // Default: Load CLAUDE.md from project
+    resume,
+    mcpServers,
   } = config;
 
   // Log the model being used
@@ -248,6 +292,8 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     permissionMode,
     settingSources,
     abortController, // Pass to SDK for process cleanup
+    ...(resume && { resume }),
+    ...(mcpServers && { mcpServers }),
   };
 
   const responseStream = query({ prompt, options });
@@ -259,6 +305,7 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
   let cacheReadTokens = 0;
   let fixCount = 0;
   const filesReferenced = new Set<string>();
+  let sessionId: string | undefined;
 
   // Conversation capture (if enabled)
   const conversationMessages: Array<{
@@ -291,6 +338,11 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
 
   // Process the response stream
   for await (const message of responseStream) {
+    // Capture session ID from any message
+    if (!sessionId && 'session_id' in message) {
+      sessionId = message.session_id;
+    }
+
     if (message.type === 'assistant') {
       const content = message.message.content;
 
@@ -401,6 +453,7 @@ export async function runAgent(prompt: string, config: AgentConfig): Promise<Age
     cost,
     fixCount,
     filesReferenced,
+    sessionId,
   };
 
   // Include conversation if captured

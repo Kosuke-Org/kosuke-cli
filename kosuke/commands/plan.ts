@@ -17,15 +17,15 @@
  *   kosuke plan --prompt="Add notes feature" --no-test  # Skip WEB-TEST tickets
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'fs';
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync, mkdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
-import { glob } from 'glob';
+import { z } from 'zod';
 import type { PlanOptions, Ticket } from '../types.js';
-import { calculateCost } from '../utils/claude-agent.js';
+import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { askQuestion } from '../utils/interactive-input.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { processAndWriteTickets, sortTicketsByOrder } from '../utils/tickets-manager.js';
+import { processAndWriteTickets } from '../utils/tickets-manager.js';
 
 /**
  * Generate timestamp-based tickets path in tickets/ folder
@@ -46,7 +46,7 @@ function generateTicketsPath(cwd: string): string {
     .replace(/[T:]/g, '-')
     .replace(/\.\d{3}Z$/, '');
 
-  return join(ticketsDir, `${timestamp}.ticket.json`);
+  return join(ticketsDir, `${timestamp}.tickets.json`);
 }
 
 /**
@@ -54,8 +54,7 @@ function generateTicketsPath(cwd: string): string {
  */
 export interface PlanResult {
   success: boolean;
-  tickets: Ticket[];
-  ticketsFile: string;
+  ticketsFile: string | null;
   tokensUsed: {
     input: number;
     output: number;
@@ -66,187 +65,170 @@ export interface PlanResult {
   error?: string;
 }
 
+function createPlanMcpServer(ticketsPath: string, cwd: string) {
+  return createSdkMcpServer({
+    name: 'kosuke-plan',
+    version: '1.0.0',
+    tools: [
+      tool(
+        'write_tickets',
+        'Create tickets.json file with implementation tickets. Use this when all clarification questions have been answered and you have enough information to create actionable tickets.',
+        {
+          tickets: z
+            .array(
+              z.object({
+                id: z
+                  .string()
+                  .describe(
+                    'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-ENGINE- for Python microservice, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests'
+                  ),
+                title: z.string().describe('Short descriptive title'),
+                description: z
+                  .string()
+                  .describe(
+                    'Detailed description with acceptance criteria, implementation notes, and technical requirements based on codebase analysis'
+                  ),
+                type: z
+                  .enum(['schema', 'engine', 'backend', 'frontend', 'test'])
+                  .describe(
+                    'Ticket type: schema (database), engine (Python microservice), backend (API), frontend (UI), test (E2E)'
+                  ),
+                estimatedEffort: z.number().describe('Effort estimate 1-10'),
+                category: z
+                  .string()
+                  .optional()
+                  .describe('Feature category (e.g., auth, billing, tasks, ui)'),
+              })
+            )
+            .describe('Array of tickets to create'),
+        },
+        async (args) => {
+          try {
+            // Transform to full Ticket objects
+            const tickets: Ticket[] = args.tickets.map((t) => ({
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              type: t.type,
+              estimatedEffort: t.estimatedEffort,
+              status: 'Todo' as const,
+              category: t.category,
+            }));
+
+            // Validate and write tickets IMMEDIATELY
+            console.log(`\n✅ Generated ${tickets.length} ticket(s)`);
+            const { tickets: validatedTickets } = await processAndWriteTickets(
+              tickets,
+              ticketsPath,
+              cwd,
+              { displaySummary: true }
+            );
+
+            // Get relative path for cleaner output
+            const relativeTicketsPath = ticketsPath.replace(cwd + '/', '');
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `✅ Successfully saved ${validatedTickets.length} tickets to ${relativeTicketsPath}. Your job is complete.`,
+                },
+              ],
+            };
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.error(`\n❌ Failed to create tickets: ${errorMessage}`);
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Error: ${errorMessage}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      ),
+    ],
+  });
+}
+
 /**
  * Session state for interactive mode
  */
 interface PlanSession {
   prompt: string;
-  messages: Anthropic.MessageParam[];
-}
-
-/**
- * Tool definitions for planning - includes file exploration and ticket generation
- */
-const PLAN_TOOLS: Anthropic.Tool[] = [
-  {
-    name: 'read_file',
-    description:
-      'Read the contents of a file. Use this to explore the codebase and understand existing patterns, conventions, and implementations.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'Path to the file to read (relative to project root)',
-        },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'list_directory',
-    description:
-      'List files and directories in a given path. Use this to explore the project structure.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'Path to the directory to list (relative to project root, use "." for root)',
-        },
-      },
-      required: ['path'],
-    },
-  },
-  {
-    name: 'glob_search',
-    description:
-      'Find files matching a glob pattern. Use this to find specific file types or locate files by name pattern.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        pattern: {
-          type: 'string',
-          description: 'Glob pattern to match (e.g., "**/*.ts", "lib/db/**/*.ts", "**/schema*.ts")',
-        },
-      },
-      required: ['pattern'],
-    },
-  },
-  {
-    name: 'write_tickets',
-    description:
-      'Create tickets.json file with implementation tickets. Use this when all clarification questions have been answered and you have enough information to create actionable tickets.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        tickets: {
-          type: 'array',
-          description: 'Array of tickets to create',
-          items: {
-            type: 'object',
-            properties: {
-              id: {
-                type: 'string',
-                description:
-                  'Ticket ID with prefix: PLAN-SCHEMA- for database, PLAN-ENGINE- for Python microservice, PLAN-BACKEND- for API, PLAN-FRONTEND- for UI, PLAN-WEB-TEST- for E2E tests',
-              },
-              title: {
-                type: 'string',
-                description: 'Short descriptive title',
-              },
-              description: {
-                type: 'string',
-                description:
-                  'Detailed description with acceptance criteria, implementation notes, and technical requirements based on codebase analysis',
-              },
-              type: {
-                type: 'string',
-                enum: ['schema', 'engine', 'backend', 'frontend', 'test'],
-                description:
-                  'Ticket type: schema (database), engine (Python microservice), backend (API), frontend (UI), test (E2E)',
-              },
-              estimatedEffort: {
-                type: 'number',
-                description: 'Effort estimate 1-10',
-              },
-              category: {
-                type: 'string',
-                description: 'Feature category (e.g., auth, billing, tasks, ui)',
-              },
-            },
-            required: ['id', 'title', 'description', 'type', 'estimatedEffort'],
-          },
-        },
-      },
-      required: ['tickets'],
-    },
-  },
-];
-
-/**
- * Read CLAUDE.md from project directory if it exists
- */
-function readClaudeMd(cwd: string): string | null {
-  const claudeMdPath = join(cwd, 'CLAUDE.md');
-  if (existsSync(claudeMdPath)) {
-    try {
-      return readFileSync(claudeMdPath, 'utf-8');
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  sessionId?: string; // Track session ID for multi-turn conversation
 }
 
 /**
  * Build system prompt for plan command
- * @param claudeMdContent - Content of CLAUDE.md file if it exists
  * @param noTest - If true, exclude WEB-TEST tickets from generation
  */
-function buildPlanSystemPrompt(claudeMdContent: string | null, noTest: boolean = false): string {
-  const claudeSection = claudeMdContent
-    ? `
+function buildPlanSystemPrompt(noTest: boolean = false): string {
+  return `You are Kosuke Planning Assistant - Your job is to create implementation tickets, NOT to implement features.
 
-**PROJECT CONTEXT (from CLAUDE.md):**
+**YOUR WORKFLOW (3 STEPS):**
 
-${claudeMdContent}
+**STEP 1: Explore Codebase (MANDATORY - ALWAYS DO THIS FIRST)**
+⚠️ You MUST explore the codebase BEFORE asking clarification questions
+- Use glob_file_search to find relevant files (pages, components, APIs)
+- Use read_file to understand existing patterns and conventions
+- Use grep/codebase_search to find related implementations
+- This helps you ask INFORMED questions and generate ACCURATE tickets
 
----
-`
-    : '';
+**STEP 2: Ask Clarification Questions (MANDATORY)**
+⚠️  You MUST ask clarification questions BEFORE creating tickets - DO NOT SKIP THIS STEP
 
-  return `You are an expert software architect helping plan implementation tickets for a feature or bug fix.
+**Question Rules:**
+- Ask ONLY about: user experience, business logic, data display, behavior, scope
+- NEVER ask about: technical implementation, libraries, architecture, database, APIs, UI placement, styling
+- YOU decide all technical details - users decide business requirements
 
-**YOUR PRIMARY OBJECTIVE:** Gather enough information through clarification questions to create actionable implementation tickets that can be processed by an automated build system.
-${claudeSection}
-**Your Workflow:**
+**Good Questions (User Experience & Business Logic):**
+✅ "Should the report show all data or only filtered data?"
+✅ "What happens if there are no results?"
+✅ "Should this be per-user or per-organization?"
+✅ "What information should be included?"
 
-1. **Explore Codebase**:
-   - Use list_directory to explore relevant parts of the codebase
-   - Read existing similar implementations to understand patterns
-   - Analyze what the user wants to achieve
-   - Identify what's unclear or needs user input
+**Bad Questions (Technical - Never Ask These):**
+❌ "Should we use library X or Y?"
+❌ "Should this be client-side or server-side?"
+❌ "Where should the button be placed?"
+❌ "Should we cache this?"
+❌ "What file format (landscape/portrait)?"
 
-2. **Ask Clarification Questions**: Present questions in this format:
+**Output Format (use exactly):**
 
 ---
 ## Understanding Your Request
 
-[Brief summary of what you understood]
+[2-3 sentences summarizing what you understood]
 
 ## Clarification Questions
 
-For each question, provide BOTH the question AND a recommended approach:
+1. **[Topic - e.g., "Data Scope"]**
+   - Question: [Non-technical user question]
+   - 💡 Recommendation: [Simple default choice]
 
-1. **[Topic]**
-   - Question: [User-focused question - NOT technical]
-   - 💡 Recommendation: [Simple, practical default choice]
+2. **[Topic - e.g., "Empty States"]**
+   - Question: [Non-technical user question]
+   - 💡 Recommendation: [Simple default choice]
 
-2. **[Topic]**
-   - Question: [User-focused question - NOT technical]
-   - 💡 Recommendation: [Simple, practical default choice]
+(Add as many questions as needed - all must be non-technical)
 
 **Quick Option:** Reply "go with recommendations" to accept all defaults.
 ---
 
-3. **Iterative Refinement**: As the user answers:
-   - If user says "go with recommendations", accept all defaults
-   - If user provides specific answers, incorporate them
-   - Ask follow-up questions ONLY if critical information is still missing
-   - Bias towards simplicity - this is an MVP
+**STEP 3: Create Tickets (Only After User Responds)**
+⚠️  **CRITICAL: Call write_tickets ONCE, then STOP IMMEDIATELY**
 
-4. **Generate Tickets**: Once requirements are clear, use \`write_tickets\` tool to create tickets:
+- Wait for user to answer your questions
+- Call write_tickets tool ONE TIME with all tickets in the array
+- After the tool returns success, STOP - do not call ANY other tools
+- DO NOT write explanations or summaries after write_tickets
+- The tool response is your final output
 
 **Ticket Types & Prefixes:**
 - \`PLAN-SCHEMA-N\`: Database schema changes (Drizzle ORM migrations)
@@ -308,23 +290,19 @@ Web test tickets are executed by Playwright MCP with Claude AI. Follow these gui
 6. Expected: Redirected to main app`
   }
 
-**CRITICAL RULES FOR QUESTIONS:**
-- Questions must be NON-TECHNICAL and USER-FOCUSED
-- Focus ONLY on user experience, behavior, and business logic
-- YOU decide all technical/algorithmic details (libraries, caching, performance, architecture)
-- Never ask about: URLs, database design, APIs, algorithms, processing timing, or implementation approach
-- Include technical decisions in ticket DESCRIPTIONS, not in questions to users
-
-**Examples:**
-- ❌ BAD: "Should we cache results or process on-demand?"
-- ❌ BAD: "Should this use Python or TypeScript?"
-- ✅ GOOD: "Should invoices be per-user or shared per company?"
-- ✅ GOOD: "For empty descriptions, show neutral mood or hide it?"
-
 **Ticket Generation Rules:**
 - Generate only the tickets actually needed
 - Ensure tickets are atomic and independently implementable
 - Include clear acceptance criteria in each ticket description
+
+**HOW TO OUTPUT TICKETS (CRITICAL - READ CAREFULLY):**
+⚠️  Once user responds, call write_tickets ONCE with all tickets
+⚠️  After calling write_tickets, STOP IMMEDIATELY - do NOT call ANY other tools
+⚠️  DO NOT call: Task, ExitPlanMode, Subagent - these are BLOCKED
+⚠️  DO NOT write summaries or explanations after write_tickets - the tool output is final
+⚠️  The system automatically validates, saves to tickets/{timestamp}.tickets.json, and displays results
+
+**CRITICAL:** write_tickets is your LAST action. Once called, you are DONE. No other tool calls allowed.
 
 **Example Tickets (Full JSON):**
 [
@@ -364,392 +342,6 @@ Web test tickets are executed by Playwright MCP with Claude AI. Follow these gui
 }
 
 /**
- * Execute read_file tool
- */
-function executeReadFile(
-  toolInput: Record<string, unknown>,
-  cwd: string
-): { success: boolean; content: string } {
-  try {
-    const filePath = toolInput.path as string;
-    const fullPath = join(cwd, filePath);
-
-    if (!existsSync(fullPath)) {
-      return { success: false, content: `File not found: ${filePath}` };
-    }
-
-    const stats = statSync(fullPath);
-    if (stats.isDirectory()) {
-      return { success: false, content: `Path is a directory, not a file: ${filePath}` };
-    }
-
-    const content = readFileSync(fullPath, 'utf-8');
-
-    console.log(`\n   📖 Reading: ${filePath}`);
-    return { success: true, content };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return { success: false, content: `Error reading file: ${msg}` };
-  }
-}
-
-/**
- * Execute list_directory tool
- */
-function executeListDirectory(
-  toolInput: Record<string, unknown>,
-  cwd: string
-): { success: boolean; content: string } {
-  try {
-    const dirPath = (toolInput.path as string) || '.';
-    const fullPath = join(cwd, dirPath);
-
-    if (!existsSync(fullPath)) {
-      return { success: false, content: `Directory not found: ${dirPath}` };
-    }
-
-    const stats = statSync(fullPath);
-    if (!stats.isDirectory()) {
-      return { success: false, content: `Path is not a directory: ${dirPath}` };
-    }
-
-    const entries = readdirSync(fullPath);
-    const items: string[] = [];
-
-    // Filter out common ignored directories
-    const ignoreDirs = ['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', '.tmp'];
-
-    for (const entry of entries.sort()) {
-      if (entry.startsWith('.') && entry !== '.env.example') continue;
-      if (ignoreDirs.includes(entry)) continue;
-
-      const entryPath = join(fullPath, entry);
-      try {
-        const entryStat = statSync(entryPath);
-        if (entryStat.isDirectory()) {
-          items.push(`📁 ${entry}/`);
-        } else {
-          items.push(`📄 ${entry}`);
-        }
-      } catch {
-        items.push(`❓ ${entry}`);
-      }
-    }
-
-    console.log(`\n   📂 Listing: ${dirPath}`);
-    return { success: true, content: items.join('\n') || '(empty directory)' };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return { success: false, content: `Error listing directory: ${msg}` };
-  }
-}
-
-/**
- * Execute glob_search tool
- */
-async function executeGlobSearch(
-  toolInput: Record<string, unknown>,
-  cwd: string
-): Promise<{ success: boolean; content: string }> {
-  try {
-    const pattern = toolInput.pattern as string;
-
-    const files = await glob(pattern, {
-      cwd,
-      nodir: true,
-      ignore: ['node_modules/**', '.git/**', 'dist/**', 'build/**', '.next/**', '__pycache__/**'],
-    });
-
-    if (files.length === 0) {
-      return { success: true, content: `No files found matching: ${pattern}` };
-    }
-
-    // Limit results
-    const maxResults = 50;
-    const truncated = files.length > maxResults;
-    const displayFiles = files.slice(0, maxResults);
-
-    console.log(`\n   🔍 Found ${files.length} file(s) matching: ${pattern}`);
-
-    let content = displayFiles.join('\n');
-    if (truncated) {
-      content += `\n\n...[showing ${maxResults} of ${files.length} files]`;
-    }
-
-    return { success: true, content };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return { success: false, content: `Error searching files: ${msg}` };
-  }
-}
-
-/**
- * Execute write_tickets tool
- * Returns parsed tickets for later validation - does NOT write to file
- */
-function executeWriteTickets(toolInput: Record<string, unknown>): {
-  success: boolean;
-  message: string;
-  tickets: Ticket[];
-} {
-  try {
-    const inputTickets = toolInput.tickets as Array<{
-      id: string;
-      title: string;
-      description: string;
-      type: 'schema' | 'backend' | 'frontend' | 'test';
-      estimatedEffort: number;
-      category?: string;
-    }>;
-
-    // Transform to full Ticket objects
-    const tickets: Ticket[] = inputTickets.map((t) => ({
-      id: t.id,
-      title: t.title,
-      description: t.description,
-      type: t.type,
-      estimatedEffort: t.estimatedEffort,
-      status: 'Todo' as const,
-      category: t.category,
-    }));
-
-    // Sort tickets by processing order (using shared utility)
-    const sortedTickets = sortTicketsByOrder(tickets);
-
-    console.log(`\n📋 Generated ${sortedTickets.length} ticket(s) - validating...`);
-
-    return {
-      success: true,
-      message: `Generated ${sortedTickets.length} tickets - will validate and save after confirmation`,
-      tickets: sortedTickets,
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`\n❌ Failed to parse tickets: ${errorMessage}`);
-    return {
-      success: false,
-      message: `Error: ${errorMessage}`,
-      tickets: [],
-    };
-  }
-}
-
-/**
- * Format token usage for display
- */
-function formatTokenUsage(
-  inputTokens: number,
-  outputTokens: number,
-  cacheCreationTokens: number,
-  cacheReadTokens: number,
-  cost: number
-): string {
-  const breakdown = [];
-  if (inputTokens > 0) breakdown.push(`${inputTokens.toLocaleString()} input`);
-  if (outputTokens > 0) breakdown.push(`${outputTokens.toLocaleString()} output`);
-  if (cacheCreationTokens > 0)
-    breakdown.push(`${cacheCreationTokens.toLocaleString()} cache write`);
-  if (cacheReadTokens > 0) breakdown.push(`${cacheReadTokens.toLocaleString()} cache read`);
-
-  return `💰 Cost: $${cost.toFixed(4)} (${breakdown.join(' + ')} tokens)`;
-}
-
-/**
- * Process a single Claude interaction with streaming
- * Handles multiple tool calls in a loop until Claude stops calling tools
- */
-async function processClaudeInteraction(
-  messages: Anthropic.MessageParam[],
-  systemPrompt: string,
-  cwd: string
-): Promise<{
-  response: string;
-  messages: Anthropic.MessageParam[];
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  tickets: Ticket[];
-  ticketsCreated: boolean;
-}> {
-  const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
-
-  let responseText = '';
-  let tickets: Ticket[] = [];
-  let ticketsCreated = false;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheCreationTokens = 0;
-  let totalCacheReadTokens = 0;
-  let isFirstOutput = true;
-
-  // Loop until Claude stops calling tools
-  const maxIterations = 20; // Safety limit
-  let iterations = 0;
-
-  while (iterations < maxIterations) {
-    iterations++;
-
-    // Stream the response
-    const stream = await anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8096,
-      system: systemPrompt,
-      tools: PLAN_TOOLS,
-      messages,
-    });
-
-    let currentText = '';
-    const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
-
-    // Process stream events
-    for await (const event of stream) {
-      if (event.type === 'content_block_start') {
-        if (event.content_block.type === 'text') {
-          if (isFirstOutput) {
-            process.stdout.write('\n> Claude:\n');
-            isFirstOutput = false;
-          }
-        }
-      } else if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          const delta = event.delta.text;
-          currentText += delta;
-          process.stdout.write(delta);
-        }
-      }
-    }
-
-    responseText += currentText;
-
-    // Get final message
-    const finalMessage = await stream.finalMessage();
-
-    // Track token usage
-    const usage = finalMessage.usage as unknown as {
-      input_tokens: number;
-      output_tokens: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
-    totalInputTokens += usage.input_tokens;
-    totalOutputTokens += usage.output_tokens;
-    totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
-    totalCacheReadTokens += usage.cache_read_input_tokens || 0;
-
-    // Extract tool uses
-    for (const block of finalMessage.content) {
-      if (block.type === 'tool_use') {
-        toolUses.push({
-          id: block.id,
-          name: block.name,
-          input: block.input as Record<string, unknown>,
-        });
-      }
-    }
-
-    // If no tools called, we're done
-    if (toolUses.length === 0) {
-      messages = [...messages, { role: 'assistant', content: finalMessage.content }];
-      break;
-    }
-
-    // Execute tools
-    messages = [...messages, { role: 'assistant', content: finalMessage.content }];
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const tool of toolUses) {
-      if (tool.name === 'read_file') {
-        const result = executeReadFile(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'list_directory') {
-        const result = executeListDirectory(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'glob_search') {
-        const result = await executeGlobSearch(tool.input, cwd);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.content,
-        });
-      } else if (tool.name === 'write_tickets') {
-        const result = executeWriteTickets(tool.input);
-        tickets = result.tickets;
-        ticketsCreated = result.success;
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: result.message,
-        });
-      }
-    }
-
-    messages = [...messages, { role: 'user', content: toolResults }];
-
-    // If tickets were created, get final response and stop
-    if (ticketsCreated) {
-      const followupStream = await anthropic.messages.stream({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 8096,
-        system: systemPrompt,
-        tools: PLAN_TOOLS,
-        messages,
-      });
-
-      let followupText = '';
-      for await (const event of followupStream) {
-        if (event.type === 'content_block_delta') {
-          if (event.delta.type === 'text_delta') {
-            const delta = event.delta.text;
-            followupText += delta;
-            process.stdout.write(delta);
-          }
-        }
-      }
-
-      const followupMessage = await followupStream.finalMessage();
-      responseText += '\n' + followupText;
-      messages = [...messages, { role: 'assistant', content: followupMessage.content }];
-
-      // Add followup token usage
-      const followupUsage = followupMessage.usage as unknown as {
-        input_tokens: number;
-        output_tokens: number;
-        cache_creation_input_tokens?: number;
-        cache_read_input_tokens?: number;
-      };
-      totalInputTokens += followupUsage.input_tokens;
-      totalOutputTokens += followupUsage.output_tokens;
-      totalCacheCreationTokens += followupUsage.cache_creation_input_tokens || 0;
-      totalCacheReadTokens += followupUsage.cache_read_input_tokens || 0;
-
-      break;
-    }
-  }
-
-  return {
-    response: responseText,
-    messages,
-    inputTokens: totalInputTokens,
-    outputTokens: totalOutputTokens,
-    cacheCreationTokens: totalCacheCreationTokens,
-    cacheReadTokens: totalCacheReadTokens,
-    tickets,
-    ticketsCreated,
-  };
-}
-
-/**
  * Interactive planning session
  */
 async function interactivePlanSession(
@@ -759,8 +351,7 @@ async function interactivePlanSession(
   logContext?: ReturnType<typeof logger.createContext>,
   noTest: boolean = false
 ): Promise<{
-  messages: Anthropic.MessageParam[];
-  tickets: Ticket[];
+  ticketsPath: string | null;
   tokensUsed: { input: number; output: number; cacheCreation: number; cacheRead: number };
   cost: number;
 }> {
@@ -775,17 +366,7 @@ async function interactivePlanSession(
   );
   console.log('🤖 Claude will explore your codebase to understand patterns and conventions.\n');
 
-  // Read CLAUDE.md and inject into system prompt
-  const claudeMdContent = readClaudeMd(cwd);
-  if (claudeMdContent) {
-    console.log(`📖 Loaded CLAUDE.md (${Math.round(claudeMdContent.length / 1000)}k chars)\n`);
-  }
-
-  const systemPrompt = buildPlanSystemPrompt(claudeMdContent, noTest);
-
-  console.log(`${'─'.repeat(60)}`);
-  console.log('🤖 Using model: claude-sonnet-4-5');
-  console.log(`${'─'.repeat(60)}\n`);
+  const systemPrompt = buildPlanSystemPrompt(noTest);
 
   console.log('✨ Tip: Enter to submit, Ctrl+J for new lines.\n');
 
@@ -799,9 +380,12 @@ async function interactivePlanSession(
   };
   process.on('SIGINT', handleSigInt);
 
+  // Setup custom MCP server
+  const planMcpServer = createPlanMcpServer(ticketsPath, cwd);
+
   const session: PlanSession = {
     prompt: initialPrompt,
-    messages: [],
+    sessionId: undefined,
   };
 
   let totalInputTokens = 0;
@@ -809,68 +393,62 @@ async function interactivePlanSession(
   let totalCacheCreationTokens = 0;
   let totalCacheReadTokens = 0;
   let totalCost = 0;
-  let finalTickets: Ticket[] = [];
+  let createdTicketsPath: string | null = null;
 
   try {
-    // Start with initial prompt
-    session.messages.push({ role: 'user', content: initialPrompt });
-
     let continueConversation = true;
+    let currentPrompt = initialPrompt;
 
     while (continueConversation) {
       console.log('\n🤔 Claude is analyzing...\n');
 
-      const result = await processClaudeInteraction(session.messages, systemPrompt, cwd);
+      // Run agent with custom MCP server
+      const result = await runAgent(currentPrompt, {
+        systemPrompt,
+        cwd,
+        verbosity: 'verbose', // Show all output for interactive planning
+        mcpServers: {
+          'kosuke-plan': planMcpServer,
+        },
+        ...(session.sessionId && { resume: session.sessionId }),
+      });
 
-      session.messages = result.messages;
+      // Store session ID for conversation continuity
+      if (result.sessionId) {
+        session.sessionId = result.sessionId;
+      }
 
       // Track costs
-      totalInputTokens += result.inputTokens;
-      totalOutputTokens += result.outputTokens;
-      totalCacheCreationTokens += result.cacheCreationTokens;
-      totalCacheReadTokens += result.cacheReadTokens;
-      const batchCost = calculateCost(
-        result.inputTokens,
-        result.outputTokens,
-        result.cacheCreationTokens,
-        result.cacheReadTokens
-      );
-      totalCost += batchCost;
+      totalInputTokens += result.tokensUsed.input;
+      totalOutputTokens += result.tokensUsed.output;
+      totalCacheCreationTokens += result.tokensUsed.cacheCreation;
+      totalCacheReadTokens += result.tokensUsed.cacheRead;
+      totalCost += result.cost;
 
       // Display cost
       console.log('\n' + '─'.repeat(90));
-      console.log(
-        formatTokenUsage(
-          result.inputTokens,
-          result.outputTokens,
-          result.cacheCreationTokens,
-          result.cacheReadTokens,
-          batchCost
-        )
-      );
+      console.log(`💰 Cost: ${formatCostBreakdown(result)}`);
       console.log('─'.repeat(90) + '\n');
 
-      // Check if tickets were created
-      if (result.ticketsCreated) {
-        // Validate and write tickets using shared utility
-        const { tickets: validatedTickets } = await processAndWriteTickets(
-          result.tickets,
-          ticketsPath,
-          cwd,
-          { displaySummary: true }
-        );
-        finalTickets = validatedTickets;
+      // Check if tickets file was created (saved immediately in MCP tool handler)
+      if (existsSync(ticketsPath)) {
+        createdTicketsPath = ticketsPath;
 
         console.log('═'.repeat(90));
         console.log('📊 Total Session Cost:');
         console.log(
-          formatTokenUsage(
-            totalInputTokens,
-            totalOutputTokens,
-            totalCacheCreationTokens,
-            totalCacheReadTokens,
-            totalCost
-          )
+          `💰 ${formatCostBreakdown({
+            tokensUsed: {
+              input: totalInputTokens,
+              output: totalOutputTokens,
+              cacheCreation: totalCacheCreationTokens,
+              cacheRead: totalCacheReadTokens,
+            },
+            cost: totalCost,
+            response: '',
+            fixCount: 0,
+            filesReferenced: new Set(),
+          })}`
         );
         console.log('═'.repeat(90));
         // Get relative path for cleaner output
@@ -904,21 +482,26 @@ async function interactivePlanSession(
         console.log('═'.repeat(90));
         console.log('📊 Session Cost:');
         console.log(
-          formatTokenUsage(
-            totalInputTokens,
-            totalOutputTokens,
-            totalCacheCreationTokens,
-            totalCacheReadTokens,
-            totalCost
-          )
+          `💰 ${formatCostBreakdown({
+            tokensUsed: {
+              input: totalInputTokens,
+              output: totalOutputTokens,
+              cacheCreation: totalCacheCreationTokens,
+              cacheRead: totalCacheReadTokens,
+            },
+            cost: totalCost,
+            response: '',
+            fixCount: 0,
+            filesReferenced: new Set(),
+          })}`
         );
         console.log('═'.repeat(90) + '\n');
         continueConversation = false;
         break;
       }
 
-      // Add user response to messages
-      session.messages = [...session.messages, { role: 'user', content: userResponse }];
+      // Set next prompt for conversation continuity
+      currentPrompt = userResponse;
     }
   } catch (error) {
     console.error('\n❌ Error during planning:', error);
@@ -928,8 +511,7 @@ async function interactivePlanSession(
   }
 
   return {
-    messages: session.messages,
-    tickets: finalTickets,
+    ticketsPath: createdTicketsPath,
     tokensUsed: {
       input: totalInputTokens,
       output: totalOutputTokens,
@@ -952,8 +534,7 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
   if (!existsSync(cwd)) {
     return {
       success: false,
-      tickets: [],
-      ticketsFile: '',
+      ticketsFile: null,
       tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
       cost: 0,
       error: `Directory not found: ${cwd}`,
@@ -964,8 +545,7 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
   if (!stats.isDirectory()) {
     return {
       success: false,
-      tickets: [],
-      ticketsFile: '',
+      ticketsFile: null,
       tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
       cost: 0,
       error: `Path is not a directory: ${cwd}`,
@@ -978,17 +558,15 @@ export async function planCore(options: PlanOptions): Promise<PlanResult> {
     const result = await interactivePlanSession(prompt, cwd, ticketsPath, undefined, noTest);
 
     return {
-      success: result.tickets.length > 0,
-      tickets: result.tickets,
-      ticketsFile: ticketsPath,
+      success: result.ticketsPath !== null,
+      ticketsFile: result.ticketsPath,
       tokensUsed: result.tokensUsed,
       cost: result.cost,
     };
   } catch (error) {
     return {
       success: false,
-      tickets: [],
-      ticketsFile: '',
+      ticketsFile: null,
       tokensUsed: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
       cost: 0,
       error: error instanceof Error ? error.message : String(error),

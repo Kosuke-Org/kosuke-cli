@@ -45,7 +45,7 @@ import { join, resolve } from 'path';
 import type { TicketsOptions, TicketsResult } from '../types.js';
 import { formatCostBreakdown, runAgent } from '../utils/claude-agent.js';
 import { logger, setupCancellationHandler } from '../utils/logger.js';
-import { parseTickets, processAndWriteTickets } from '../utils/tickets-manager.js';
+import { loadTicketsFile, parseTickets, processAndWriteTickets } from '../utils/tickets-manager.js';
 import { planCore } from './plan.js';
 
 /**
@@ -400,16 +400,20 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
       noLogs: options.noLogs,
     });
 
-    if (!planResult.success) {
+    if (!planResult.success || !planResult.ticketsFile) {
       throw new Error(planResult.error || 'Plan command failed');
     }
 
+    // Load tickets from file
+    const ticketsFile = loadTicketsFile(planResult.ticketsFile);
+    const tickets = ticketsFile.tickets;
+
     // Convert plan result to tickets result format
-    const schemaTickets = planResult.tickets.filter((t) => t.type === 'schema');
-    const engineTickets = planResult.tickets.filter((t) => t.type === 'engine');
-    const backendTickets = planResult.tickets.filter((t) => t.type === 'backend');
-    const frontendTickets = planResult.tickets.filter((t) => t.type === 'frontend');
-    const testTickets = planResult.tickets.filter((t) => t.type === 'test');
+    const schemaTickets = tickets.filter((t) => t.type === 'schema');
+    const engineTickets = tickets.filter((t) => t.type === 'engine');
+    const backendTickets = tickets.filter((t) => t.type === 'backend');
+    const frontendTickets = tickets.filter((t) => t.type === 'frontend');
+    const testTickets = tickets.filter((t) => t.type === 'test');
 
     return {
       schemaTickets,
@@ -417,7 +421,7 @@ export async function ticketsCore(options: TicketsOptions): Promise<TicketsResul
       backendTickets,
       frontendTickets,
       testTickets,
-      totalTickets: planResult.tickets.length,
+      totalTickets: tickets.length,
       projectPath,
       tokensUsed: planResult.tokensUsed,
       cost: planResult.cost,
