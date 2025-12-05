@@ -273,6 +273,7 @@ export interface PlanOptions {
   directory?: string; // Directory with existing code (default: cwd)
   noTest?: boolean; // Skip WEB-TEST ticket creation
   noLogs?: boolean;
+  resume?: string; // Session ID to resume a previous planning session
 }
 
 export interface TestRunnerOptions {

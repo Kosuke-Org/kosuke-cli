@@ -42,6 +42,7 @@ import { migrateCommand } from './kosuke/commands/migrate.js';
 import { planCommand } from './kosuke/commands/plan.js';
 import { requirementsCommand } from './kosuke/commands/requirements.js';
 import { reviewCommand } from './kosuke/commands/review.js';
+import { serveCommand } from './kosuke/commands/serve.js';
 import { syncRulesCommand } from './kosuke/commands/sync-rules.js';
 import { testCommand } from './kosuke/commands/test.js';
 import { ticketsCommand } from './kosuke/commands/tickets.js';
@@ -107,6 +108,7 @@ async function main() {
             args.find((arg) => arg.startsWith('--dir='))?.split('=')[1],
           noTest: args.includes('--no-test'),
           noLogs: args.includes('--no-logs'),
+          resume: args.find((arg) => arg.startsWith('--resume='))?.split('=')[1],
         };
 
         if (!options.prompt) {
@@ -115,6 +117,7 @@ async function main() {
           console.log('\nOptions:');
           console.log('  --prompt="..."       Feature or bug description (required)');
           console.log('  --directory=PATH     Directory with existing code (default: cwd)');
+          console.log('  --resume=SESSION_ID  Resume a previous planning session');
           console.log('  --no-test            Skip WEB-TEST ticket creation');
           console.log('\nOutput:');
           console.log('  Tickets are saved to tickets/{timestamp}.ticket.json');
@@ -122,6 +125,7 @@ async function main() {
           console.log('  kosuke plan --prompt="Add dark mode toggle"');
           console.log('  kosuke plan --prompt="Fix login timeout bug" --directory=./my-app');
           console.log('  kosuke plan --prompt="Add user notifications" --no-test');
+          console.log('  kosuke plan --prompt="continue" --resume=<session-id>');
           process.exit(1);
         }
 
@@ -235,6 +239,14 @@ async function main() {
         break;
       }
 
+      case 'serve': {
+        const options = {
+          port: parseInt(args.find((arg) => arg.startsWith('--port='))?.split('=')[1] || '3000'),
+        };
+        await serveCommand(options);
+        break;
+      }
+
       default:
         console.error(`❌ Unknown command: ${command}\n`);
         showHelp();
@@ -253,6 +265,21 @@ function showHelp() {
 ╚═══════════════════════════════════════════════════════════╝
 
 COMMANDS:
+
+  serve [options]
+    Start HTTP server for Kosuke CLI commands
+    Provides SSE endpoints for real-time command execution
+
+    Options:
+      --port=<number>       Port to listen on (default: 3000)
+
+    Examples:
+      kosuke serve                         # Start on port 3000
+      kosuke serve --port=8080             # Start on custom port
+
+    Endpoints:
+      GET  /health                         # Health check
+      POST /api/plan                       # Plan command with SSE
 
   sync-rules [options]
     Sync rules and documentation from kosuke-template
@@ -325,6 +352,7 @@ COMMANDS:
       kosuke plan --prompt="Add dark mode toggle"
       kosuke plan --prompt="Fix login timeout bug" --directory=./my-app
       kosuke plan --prompt="Add user notifications" --no-test
+      kosuke plan --prompt="continue" --resume=<session-id>
 
     Features:
       - Analyzes codebase to understand existing patterns
